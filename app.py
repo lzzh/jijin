@@ -5,7 +5,7 @@ import json
 import os
 import time
 import random
-import re  # 💡 引入正则库，用于智能解析批量粘帖的文本
+import re
 import altair as alt
 
 # 设置网页布局
@@ -111,10 +111,10 @@ st.markdown("<hr>", unsafe_allow_html=True)
 
 # --- 2. 纯净控制台 ---
 st.subheader("🛠️ 基金综合管理控制台")
-edit_code = st.selectbox("🎯 当前选中的基金（用于下方数据穿透及批量导入）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+edit_code = st.selectbox("🎯 当前选中的基金（默认分流目标）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
 current_info = st.session_state.fund_config[edit_code]
 
-op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能一键搬家", "📋 极速批量数据导入", "✨ 快捷添加新基金"], horizontal=True)
+op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能一键搬家", "📋 极速批量数据导入", "✨ 快捷增删基金"], horizontal=True)
 
 if op_mode == "📝 修改定投计划":
     with st.form("my_edit_form"):
@@ -154,76 +154,116 @@ elif op_mode == "🔄 🛠️ 智能一键搬家":
 
 elif op_mode == "📋 极速批量数据导入":
     st.markdown("#### 🚀 智能多源文本/Excel 批量粘贴对齐通道")
-    st.markdown("你可以直接去网页、Excel 或群里，把带有**日期**和**净值**的多行文本/表格整块复制并粘贴到下方（系统会自动洗去杂质并去重）。")
+    st.markdown("💡 **智能分流机制**：你可以直接把多只基金的数据混在一起粘贴！只要某行里包含6位基金代码（如 `008163`），系统会自动将其归入该基金库；若没有写代码，则默认录入到当前选中的 **{}** 中。".format(st.session_state.fund_config[edit_code]['name']))
     
-    # 大文本输入框提供超大的粘贴自由度
     raw_paste_text = st.text_area(
         "📝 请在此处直接粘贴历史数据明细：", 
         height=180, 
-        placeholder="支持各种杂乱格式，例如：\n2026-07-03  1.2345  0.45%\n2026-07-02  1.2210  -0.12%\n系统会自动精准提取，无惧空格或符号！"
+        placeholder="支持混合格式，例如：\n008163  2026-07-03  1.2345\n016452  2026-07-03  2.5640\n2026-07-02  1.2210 (未标代码则默认归属当前选中基金)"
     )
     
     if st.button("⚡ 启动智能清洗并批量导入库"):
         if not raw_paste_text.strip():
-            st.error("⚠️ 粘贴板空空如也，请先复制数据后再点这里！")
+            st.error("⚠️ 粘贴板空空如也，请先复制数据！")
         else:
             lines = raw_paste_text.split('\n')
-            local_data = load_local_history(edit_code)
-            existing_dates = {item['日期'] for item in local_data}
             
-            import_count = 0
-            # 💡 高级正则：智能抓取 YYYY-MM-DD 或 YYYY/MM/DD 后跟的小数净值
+            memory_db = {}
+            for code in st.session_state.fund_config.keys():
+                memory_db[code] = load_local_history(code)
+                
+            import_details = {code: 0 for code in st.session_state.fund_config.keys()}
+            
             pattern = re.compile(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+([0-9.]+)')
+            code_pattern = re.compile(r'\b(\d{6})\b')
             
             for line in lines:
                 match = pattern.search(line)
                 if match:
                     raw_date = match.group(1).replace('/', '-').replace('.', '-')
-                    # 补齐日期格式为标准的 YYYY-MM-DD
                     parts = raw_date.split('-')
                     standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
                     
                     try:
                         dwjz_val = float(match.group(2))
-                        # 尝试智能抓取可能存在的涨跌幅百分比，若没有则默认给 0.0
                         growth_match = re.search(r'([-+]?[0-9.]+)%', line)
                         growth_val = float(growth_match.group(1)) if growth_match else 0.0
                         
-                        # 覆盖式更新或直接新增
-                        local_data = [item for item in local_data if item['日期'] != standard_date]
-                        local_data.append({
+                        target_code = edit_code
+                        code_match = code_pattern.search(line)
+                        if code_match and code_match.group(1) in memory_db:
+                            target_code = code_match.group(1)
+                            
+                        memory_db[target_code] = [item for item in memory_db[target_code] if item['日期'] != standard_date]
+                        memory_db[target_code].append({
                             "日期": standard_date,
                             "单位净值": dwjz_val,
                             "累计净值": dwjz_val,
                             "净值增长率": growth_val
                         })
-                        import_count += 1
+                        import_details[target_code] += 1
                     except:
                         continue
             
-            if import_count > 0:
-                local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
-                save_local_history(edit_code, local_data)
-                st.success(f"🎉 【批量导入大获全胜】成功解析并合并写入了 {import_count} 天的数据到本地库！图表已完美对齐刷新。")
+            total_imported = 0
+            for code, count in import_details.items():
+                if count > 0:
+                    memory_db[code] = sorted(memory_db[code], key=lambda x: x['日期'], reverse=True)
+                    save_local_history(code, memory_db[code])
+                    total_imported += count
+            
+            if total_imported > 0:
+                summary_msg = "🎉 【智能分流导入成功】共写入 {} 条数据！明细：".format(total_imported)
+                for code, count in import_details.items():
+                    if count > 0:
+                        summary_msg += " 基金[{}] +{}条；".format(code, count)
+                st.success(summary_msg)
                 st.rerun()
             else:
-                st.error("⚠️ 没能识别出有效数据！请确保粘贴的文本中，每一行都包含形如 '2026-07-03' 的日期和其紧跟的数字净值。")
+                st.error("⚠️ 未能成功识别任何有效数据，请检查格式。")
 
 else:
-    with st.form("add_new_fund_form"):
-        add_code = st.text_input("请输入6位基金代码：", max_chars=6)
-        add_name = st.text_input("请输入基金简称：")
-        add_index = st.text_input("关联跟踪的指数名称：")
-        col_ap1, col_ap2 = st.columns(2)
-        with col_ap1: add_period = st.text_input("设定定投周期：", value="每周二")
-        with col_ap2: add_amount = st.number_input("设定定投金额(元)：", value=100, step=10)
-        submit_add = st.form_submit_button("➕ 确认添加这只基金")
-        if submit_add:
-            if len(add_code) != 6 or not add_name: st.error("⚠️ 请输入正确的代码和简称！")
-            else:
-                st.session_state.fund_config[add_code] = {'name': add_name, 'index_name': add_index if add_index else '自定义指数', 'period': add_period, 'amount': add_amount, 'pe_ttm': 20.0, 'pe_percent': 50.0, 'div_yield': '1.50%', 'status': '新入库跟踪', 'base_strategy': '🎯 建议【严格执行常规计划 {plan}】。'}
+    # 💡 升级为“快捷增删基金”面板
+    c_add, c_del = st.columns(2)
+    
+    with c_add:
+        st.markdown("##### ➕ 添加新基金入库")
+        with st.form("add_new_fund_form"):
+            add_code = st.text_input("请输入6位基金代码：", max_chars=6)
+            add_name = st.text_input("请输入基金简称：")
+            add_index = st.text_input("关联跟踪的指数名称：")
+            col_ap1, col_ap2 = st.columns(2)
+            with col_ap1: add_period = st.text_input("设定定投周期：", value="每周二")
+            with col_ap2: add_amount = st.number_input("设定定投金额(元)：", value=100, step=10)
+            submit_add = st.form_submit_button("➕ 确认添加这只基金")
+            if submit_add:
+                if len(add_code) != 6 or not add_name: st.error("⚠️ 请输入正确的代码和简称！")
+                else:
+                    st.session_state.fund_config[add_code] = {'name': add_name, 'index_name': add_index if add_index else '自定义指数', 'period': add_period, 'amount': add_amount, 'pe_ttm': 20.0, 'pe_percent': 50.0, 'div_yield': '1.50%', 'status': '新入库跟踪', 'base_strategy': '🎯 建议【严格执行常规计划 {plan}】。'}
+                    save_config(st.session_state.fund_config)
+                    st.success(f"🎉 基金永久添加成功！")
+                    st.rerun()
+
+    with c_del:
+        st.markdown("##### 🗑️ 危险区：一键卸载/删除基金")
+        st.caption("注：删除基金配置的同时，系统也会自动抹除它的本地历史缓存数据库文件。")
+        del_target = st.selectbox("请选择要销毁的基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}", key="del_select")
+        
+        # 使用确认勾选框，防止手抖误触
+        confirm_del = st.checkbox("🚨 我已确认此操作不可逆，同意删除")
+        if st.button("🔥 彻底从系统中抹除该基金", disabled=not confirm_del):
+            if del_target in st.session_state.fund_config:
+                # 1. 从当前配置中剔除
+                del st.session_state.fund_config[del_target]
                 save_config(st.session_state.fund_config)
-                st.success(f"🎉 基金永久添加成功！")
+                
+                # 2. 清理它的历史 JSON 数据库文件
+                hist_file = os.path.join(HISTORY_DIR, f"{del_target}_hist.json")
+                if os.path.exists(hist_file):
+                    try: os.remove(hist_file)
+                    except: pass
+                    
+                st.success(f"💥 基金 {del_target} 及其历史数据库已成功永久卸载！")
                 st.rerun()
 
 
@@ -297,7 +337,7 @@ if current_db:
         
     t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
     with t_year:
-        df_year = df_raw.groupby('年份').agg(该年记录天数=('日期', 'count'), 期间涨跌波动=('净值增长率', 'sum'), 期间最高单位净值=('单位净值', 'max'), 期间最低单位净值=('单位净值', 'min')).reset_index().sort_values(by='年份', ascending=False)
+        df_year = df_raw.groupby('年份').agg(該年记录天数=('日期', 'count'), 期间涨跌波动=('净值增长率', 'sum'), 期间最高单位净值=('单位净值', 'max'), 期间最低单位净值=('单位净值', 'min')).reset_index().sort_values(by='年份', ascending=False)
         df_year['期间涨跌波动'] = df_year['期间涨跌波动'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_year, use_container_width=True, hide_index=True)
     with t_month:
