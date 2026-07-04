@@ -12,7 +12,7 @@ st.set_page_config(page_title="定投监控看板", layout="centered", initial_s
 # ══════════════════════════════════════════════
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght=300;400;500;600;700&family=JetBrains+Mono:wght=400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 #MainMenu, footer, header { visibility: hidden; }
 * { box-sizing: border-box; }
@@ -462,7 +462,7 @@ with tab_manage:
     manage_code = st.selectbox("选择维护项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", key="plan_manage_select")
     m_info = st.session_state.fund_config[manage_code]
     
-    with St.form("edit_plan_form"):
+    with st.form("edit_plan_form"):
         c_p1, c_p2 = st.columns(2)
         with c_p1: new_period = st.text_input("定投周期", value=m_info['period'])
         with c_p2: new_amount = st.number_input("定投金额（元）", value=int(m_info['amount']), step=10)
