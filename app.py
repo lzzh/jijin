@@ -551,7 +551,8 @@ if hist_data:
     df_f = df[df['日期'] >= df['日期'].max()-pd.Timedelta(days=dmap[tf])] if tf in dmap else df
 
     # ---- 绘制图表 ----
-    melted = df_f.melt('日期', ['净值', '月均', '月高'], '指标', '净值')
+    # 使用 value_name='value' 避免与现有列名冲突
+    melted = df_f.melt('日期', ['净值', '月均', '月高'], '指标', 'value')
     chart = (
         alt.Chart(melted).mark_line(strokeWidth=1.8).encode(
             x=alt.X(
@@ -565,12 +566,12 @@ if hist_data:
                     labelExpr="month(datum.value)==0 ? substring(toString(year(datum.value)),2,4) : toString(month(datum.value)+1)"
                 )
             ),
-            y=alt.Y('净值:Q', title='', scale=alt.Scale(zero=False, padding=15),
+            y=alt.Y('value:Q', title='净值', scale=alt.Scale(zero=False, padding=15),
                     axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
             color=alt.Color('指标:N',
                 scale=alt.Scale(domain=['净值','月均','月高'], range=['#58A6FF','#2DA44E','#F85149']),
                 legend=alt.Legend(title='', labelColor='#C9D1D9', orient='top-right')),
-            tooltip=['日期:T','指标:N', alt.Tooltip('净值:Q', format='.4f')]
+            tooltip=['日期:T', '指标:N', alt.Tooltip('value:Q', title='净值', format='.4f')]
         ).properties(height=260, background='#0D1117')
         .configure_view(strokeOpacity=0)
         .configure_axis(labelFont='Inter')
