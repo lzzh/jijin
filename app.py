@@ -11,7 +11,7 @@ import altair as alt
 st.set_page_config(page_title="定投监控看板", layout="centered", initial_sidebar_state="collapsed")
 
 # ══════════════════════════════════════════════
-#  全局样式：暗色金融终端风格
+#  全局样式：暗色金融终端风格（完美移动端自适应）
 # ══════════════════════════════════════════════
 st.markdown("""
 <style>
@@ -373,7 +373,7 @@ div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  配置 & 数据层（保持原逻辑不变）
+#  配置 & 数据管理层（保持原逻辑并增强核心健壮性）
 # ══════════════════════════════════════════════
 CONFIG_FILE = "my_fund_settings.json"
 HISTORY_DIR = "fund_history_db"
@@ -438,7 +438,6 @@ def save_config(config):
 
 if 'fund_config' not in st.session_state:
     st.session_state.fund_config = load_config()
-    # 补全旧配置缺失的 pe_level 字段
     for code, info in st.session_state.fund_config.items():
         if 'pe_level' not in info:
             pct = info.get('pe_percent', 50)
@@ -459,28 +458,25 @@ def save_local_history(fund_code, data_list):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data_list, f, ensure_ascii=False, indent=4)
 
+# ══════════════════════════════════════════════
+#  🚀 核心重构：双向数据吞噬挖掘引擎
+# ══════════════════════════════════════════════
 def move_ants_history(fund_code, page_index=1):
     local_data = load_local_history(fund_code)
     
-    # 完整请求头，缺任何一项都可能被拦截
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html',
         'Origin': 'https://fundf10.eastmoney.com',
         'Accept': 'application/json, text/javascript, */*; q=0.01',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
         'X-Requested-With': 'XMLHttpRequest',
     }
     
     timestamp = int(time.time() * 1000)
-    url = (
-        f"https://api.fund.eastmoney.com/f10/lsjz"
-        f"?fundCode={fund_code}&pageIndex={page_index}&pageSize=40&_={timestamp}"
-    )
+    url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize=40&_={timestamp}"
     
-    # 优先用 requests（头部处理更可靠），没有就降级到 urllib
     html = None
     last_error = ""
     
@@ -489,73 +485,71 @@ def move_ants_history(fund_code, page_index=1):
         resp = req_lib.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
         html = resp.text
-    except ImportError:
-        # urllib 降级路径
+    except Exception as e:
+        last_error = str(e)
         try:
             request_obj = urllib.request.Request(url)
             for k, v in headers.items():
                 request_obj.add_header(k, v)
             with urllib.request.urlopen(request_obj, timeout=20) as response:
                 raw = response.read()
-                # 自动处理 gzip 压缩响应
                 import gzip as gz
-                try:
-                    html = gz.decompress(raw).decode('utf-8')
-                except Exception:
-                    html = raw.decode('utf-8')
-        except Exception as e:
-            last_error = str(e)
-    except Exception as e:
-        last_error = str(e)
+                try: html = gz.decompress(raw).decode('utf-8')
+                except: html = raw.decode('utf-8')
+        except Exception as e2:
+            last_error = f"urllib: {str(e2)} | req: {last_error}"
     
     if html is None:
         return local_data, 0, f"网络错误: {last_error}"
     
     try:
         data = json.loads(html)
-    except json.JSONDecodeError as e:
-        # 返回内容不是 JSON，说明被拦截或返回了 HTML 错误页
-        preview = html[:120].replace('\n', ' ')
-        return local_data, 0, f"返回非JSON（可能被拦截）: {preview}"
+    except:
+        return local_data, 0, "返回非JSON（可能被东财风控/拉黑）"
     
-    if not data or data.get("Data") is None:
-        return local_data, 0, f"接口返回空 Data，可能触发限流。原始: {str(data)[:80]}"
-    
-    if "LSJZList" not in data["Data"]:
-        return local_data, 0, f"响应缺少 LSJZList 字段，keys={list(data['Data'].keys())}"
+    if not data or data.get("Data") is None or "LSJZList" not in data["Data"]:
+        return local_data, 0, "接口限流/风控拦截"
     
     raw_list = data["Data"]["LSJZList"]
     if not raw_list:
-        return local_data, 0, "无数据（该页为空）"
+        return local_data, 0, "该页暂无历史数据"
     
     new_count = 0
+    # 建立本地已有的日期哈希集合进行查重
     existing_dates = {item['日期'] for item in local_data}
+    
     for item in raw_list:
         if not item.get("FSRQ") or not item.get("DWJZ"):
             continue
         date_str = item["FSRQ"]
+        
+        # 🌟 修复错误核心：打破增量限制。只要本地没有这天，不管是最新还是最老，统统并入！
         if date_str not in existing_dates:
             try:
                 growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
-            except (ValueError, TypeError):
+            except:
                 growth = 0.0
+            
             local_data.append({
                 "日期": date_str,
                 "单位净值": float(item["DWJZ"]),
                 "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
                 "净值增长率": growth
             })
+            existing_dates.add(date_str)
             new_count += 1
 
+    # 深度合并后，重新按时间进行完美倒序排列并存档
     if new_count > 0:
         local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
         save_local_history(fund_code, local_data)
-        return local_data, new_count, "成功"
-    return local_data, 0, "无新数据（全部已在本地）"
+        return local_data, new_count, "成功挖掘"
+        
+    return local_data, 0, "已在本地，无需重复"
 
 
 # ══════════════════════════════════════════════
-#  顶部 Banner
+#  顶部 Banner 核心看板指标
 # ══════════════════════════════════════════════
 total_monthly = sum(
     (info['amount'] * 21 if info['period'] == '每天' else
@@ -590,7 +584,6 @@ for code, info in st.session_state.fund_config.items():
         plan=plan_str, half_amount=int(info['amount'] / 2)
     )
     lvl = pe_level(info)
-    # 百分位颜色
     pct_val = info['pe_percent']
     pct_cls = 'high' if pct_val >= 75 else ('low' if pct_val <= 40 else 'mid')
 
@@ -646,16 +639,12 @@ st.markdown('<div class="console-card">', unsafe_allow_html=True)
 if op_mode == "📝 修改定投计划":
     with st.form("edit_form"):
         c1, c2 = st.columns(2)
-        with c1:
-            new_period = st.text_input("定投周期", value=current_info['period'])
-        with c2:
-            new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
+        with c1: new_period = st.text_input("定投周期", value=current_info['period'])
+        with c2: new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
         c3, c4 = st.columns(2)
-        with c3:
-            new_pe_ttm = st.number_input("当前 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
-        with c4:
-            new_pe_pct = st.number_input("PE 百分位（%）", value=float(current_info['pe_percent']), step=0.1, format="%.2f")
-        new_div = st.text_input("TTM 股息率（如 4.85%）", value=current_info['div_yield'])
+        with c3: new_pe_ttm = st.number_input("当前 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
+        with c4: new_pe_pct = st.number_input("PE 百分位（%）", value=float(current_info['pe_percent']), step=0.1, format="%.2f")
+        new_div = st.text_input("TTM 股息率", value=current_info['div_yield'])
         new_strategy = st.text_area("执行策略描述", value=current_info['base_strategy'], height=80)
         submitted = st.form_submit_button("💾 保存更新")
         if submitted:
@@ -673,18 +662,14 @@ if op_mode == "📝 修改定投计划":
             st.rerun()
 
 elif op_mode == "🔄 智能搬家":
-    st.markdown("**全员历史净值追溯**（爬取东方财富，含防反爬延迟）")
+    st.markdown("**深层历史净值打井追溯**（已集成防反爬延迟与全量合并引擎）")
 
-    # 持久化显示上次运行结果
     if 'migration_log' in st.session_state and st.session_state.migration_log:
         total_new = st.session_state.migration_log.get('total_new', 0)
         lines = st.session_state.migration_log.get('lines', [])
-        if total_new > 0:
-            st.success(f"✅ 上次搬运共写入 {total_new} 条新数据")
-        else:
-            st.warning("⚠️ 上次搬运未写入新数据，详见下方日志")
-        for l in lines:
-            st.markdown(l)
+        if total_new > 0: st.success(f"✅ 上次搬运共挖掘写入 {total_new} 条新数据")
+        else: st.warning("⚠️ 上次搬运未探测到未合并的新历史数据")
+        for l in lines: st.markdown(l)
         if st.button("🗑️ 清除日志"):
             st.session_state.migration_log = {}
             st.rerun()
@@ -699,20 +684,13 @@ elif op_mode == "🔄 智能搬家":
                 test_url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=008163&pageIndex=1&pageSize=5"
                 try:
                     import requests as rlib
-                    r = rlib.get(test_url, headers={
-                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Referer': 'https://fundf10.eastmoney.com/lsjz_008163.html',
-                        'Accept': 'application/json, */*',
-                    }, timeout=15)
-                    if r.status_code == 200 and 'LSJZList' in r.text:
-                        st.success(f"✅ 网络正常，接口可达（HTTP {r.status_code}）")
-                    else:
-                        st.error(f"❌ 接口响应异常：HTTP {r.status_code}，内容：{r.text[:100]}")
-                except Exception as e:
-                    st.error(f"❌ 连接失败：{e}")
+                    r = rlib.get(test_url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}, timeout=15)
+                    if r.status_code == 200 and 'LSJZList' in r.text: st.success(f"✅ 网络正常，接口可达")
+                    else: st.error(f"❌ 接口异常码 {r.status_code}")
+                except Exception as e: st.error(f"❌ 连接失败：{e}")
 
     with col_run:
-        if st.button("🚀 启动全员搬运", type="primary"):
+        if st.button("🚀 启动全员深挖", type="primary"):
             all_codes = list(st.session_state.fund_config.keys())
             total_steps = len(all_codes) * max_pages
             step_now = 0
@@ -725,37 +703,24 @@ elif op_mode == "🔄 智能搬家":
                 fname = st.session_state.fund_config[code]['name']
                 for p in range(1, max_pages + 1):
                     step_now += 1
-                    live_status.info(f"⏳ [{code}] {fname} · 第 {p}/{max_pages} 页…")
+                    live_status.info(f"⏳ 正在全员深度推进：[{code}] {fname} · 第 {p}/{max_pages} 页…")
                     _, n, msg = move_ants_history(code, page_index=p)
                     total_new += n
                     bar.progress(step_now / total_steps)
-                    icon = "✅" if n > 0 else ("ℹ️" if "无新数据" in msg else "⚠️")
+                    icon = "🔥" if "成功" in msg else ("ℹ️" if "无需重复" in msg else "⚠️")
                     log_lines.append(f"{icon} **[{code}]** 第{p}页：{msg}（+{n}条）")
-                    time.sleep(random.uniform(1.5, 2.8))
+                    time.sleep(random.uniform(1.6, 2.7))
 
             live_status.empty()
             bar.empty()
-
-            # 结果存入 session_state，刷新后仍可见
-            st.session_state.migration_log = {
-                'total_new': total_new,
-                'lines': log_lines,
-            }
+            st.session_state.migration_log = {'total_new': total_new, 'lines': log_lines}
             st.rerun()
 
 elif op_mode == "📋 批量导入":
-    st.markdown(f"""
-    **智能分流粘贴通道**  
-    含 6 位基金代码的行自动归入对应基金；无代码则默认归入：**{current_info['name']}**
-    """)
-    raw_text = st.text_area(
-        "粘贴历史净值数据",
-        height=160,
-        placeholder="示例（可混贴多只）：\n008163  2026-07-03  1.2345\n016452  2026-07-03  2.5640\n2026-07-02  1.2210"
-    )
+    st.markdown(f"**智能多源识别分流通道**（有6位代码精准归属，无代码默认录入到: **{current_info['name']}**）")
+    raw_text = st.text_area("粘贴历史净值文本或表格明细", height=160, placeholder="支持复制混贴。如：\n008163 2026-07-03 1.2345\n2026-07-02 1.2210")
     if st.button("⚡ 清洗并导入", type="primary"):
-        if not raw_text.strip():
-            st.error("⚠️ 内容为空，请先粘贴数据")
+        if not raw_text.strip(): st.error("⚠️ 粘贴板为空")
         else:
             lines = raw_text.split('\n')
             memory_db = {c: load_local_history(c) for c in st.session_state.fund_config}
@@ -764,8 +729,7 @@ elif op_mode == "📋 批量导入":
             code_pattern = re.compile(r'\b(\d{6})\b')
             for line in lines:
                 m = pattern.search(line)
-                if not m:
-                    continue
+                if not m: continue
                 raw_date = m.group(1).replace('/', '-').replace('.', '-')
                 parts = raw_date.split('-')
                 standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
@@ -775,13 +739,11 @@ elif op_mode == "📋 批量导入":
                     growth = float(gm.group(1)) if gm else 0.0
                     target = edit_code
                     cm = code_pattern.search(line)
-                    if cm and cm.group(1) in memory_db:
-                        target = cm.group(1)
+                    if cm and cm.group(1) in memory_db: target = cm.group(1)
                     memory_db[target] = [i for i in memory_db[target] if i['日期'] != standard_date]
                     memory_db[target].append({"日期": standard_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
                     import_details[target] += 1
-                except:
-                    continue
+                except: continue
             total = 0
             for c, cnt in import_details.items():
                 if cnt > 0:
@@ -789,65 +751,53 @@ elif op_mode == "📋 批量导入":
                     save_local_history(c, memory_db[c])
                     total += cnt
             if total > 0:
-                msg = f"✅ 写入 {total} 条：" + "  ".join(f"[{c}] +{n}" for c, n in import_details.items() if n > 0)
-                st.success(msg)
+                st.success(f"🎉 写入 {total} 条：" + " ".join(f"[{c}] +{n}" for c, n in import_details.items() if n > 0))
                 st.rerun()
-            else:
-                st.error("⚠️ 未识别到有效数据，请检查格式")
+            else: st.error("⚠️ 未识别到有效结构数据")
 
 else:
     c_add, c_del = st.columns(2)
     with c_add:
-        st.markdown("##### ➕ 添加基金")
+        st.markdown("##### ➕ 添加新项目")
         with st.form("add_form"):
-            add_code = st.text_input("基金代码（6位）", max_chars=6)
-            add_name = st.text_input("基金简称")
-            add_index = st.text_input("关联指数名称")
+            add_code = st.text_input("6位基金代码", max_chars=6)
+            add_name = st.text_input("简称")
+            add_index = st.text_input("关联指数")
             r2c1, r2c2 = st.columns(2)
             with r2c1: add_period = st.text_input("定投周期", value="每周二")
-            with r2c2: add_amount = st.number_input("定投金额（元）", value=100, step=10)
-            if st.form_submit_button("添加入库"):
-                if len(add_code) != 6 or not add_name:
-                    st.error("⚠️ 请填写完整的代码和简称")
+            with r2c2: add_amount = st.number_input("定投金额", value=100, step=10)
+            if st.form_submit_button("确认入库"):
+                if len(add_code) != 6 or not add_name: st.error("⚠️ 请检查输入")
                 else:
                     st.session_state.fund_config[add_code] = {
                         'name': add_name, 'index_name': add_index or '自定义',
                         'period': add_period, 'amount': add_amount,
-                        'pe_ttm': 20.0, 'pe_percent': 50.0,
-                        'div_yield': '1.50%', 'status': '新入库',
-                        'base_strategy': '🎯 建议【严格执行常规计划 {plan}】。',
-                        'pe_level': 'mid'
+                        'pe_ttm': 20.0, 'pe_percent': 50.0, 'div_yield': '1.50%', 'status': '新追踪',
+                        'base_strategy': '🎯 建议【严格执行常规计划 {plan}】。', 'pe_level': 'mid'
                     }
                     save_config(st.session_state.fund_config)
-                    st.success(f"✅ [{add_code}] 已添加")
+                    st.success(f"✅ [{add_code}] 已载入")
                     st.rerun()
 
     with c_del:
-        st.markdown("##### 🗑️ 删除基金")
-        del_target = st.selectbox(
-            "选择要删除的基金",
-            list(st.session_state.fund_config.keys()),
-            format_func=lambda x: f"[{x}] {st.session_state.fund_config[x]['name']}",
-            key="del_sel"
-        )
-        confirm = st.checkbox("⚠️ 我确认此操作不可逆")
-        if st.button("🔥 永久删除", disabled=not confirm):
+        st.markdown("##### 🗑️ 销毁移除项目")
+        del_target = st.selectbox("选择移除目标", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}] {st.session_state.fund_config[x]['name']}", key="del_sel")
+        confirm = st.checkbox("⚠️ 确认清除本地缓存配置与全部流水账")
+        if st.button("🔥 彻底物理抹除", disabled=not confirm):
             del st.session_state.fund_config[del_target]
             save_config(st.session_state.fund_config)
             hist = os.path.join(HISTORY_DIR, f"{del_target}_hist.json")
             if os.path.exists(hist):
-                try:
-                    os.remove(hist)
-                except:
-                    pass
-            st.success(f"✅ [{del_target}] 及历史数据已删除")
+                try: os.remove(hist)
+                except: pass
+            st.success(f"✅ [{del_target}] 及其历史数据库已完全销毁")
             st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════
-#  § 3  历史走势穿透面板
+#  § 3  多维边界历史走势穿透大盘（Altair 高端冷色流配色）
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown(f'<div class="section-label">走势穿透 · {st.session_state.fund_config[edit_code]["name"]}</div>', unsafe_allow_html=True)
@@ -860,46 +810,30 @@ if current_db:
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
 
+    # 计算全局多维指标边界
     df_global = df_raw.groupby('月份').agg(
         月度平均价中枢=('单位净值', 'mean'),
         当月最高价边界=('单位净值', 'max')
     ).reset_index()
     df_enriched = pd.merge(df_raw, df_global, on='月份', how='left')
 
-    time_frame = st.radio(
-        "时间视窗",
-        ["近1个月", "近3个月", "近6个月", "近1年", "全部"],
-        horizontal=True, index=4
-    )
+    time_frame = st.radio("时间视窗选择", ["近1个月", "近3个月", "近6个月", "近1年", "全部"], horizontal=True, index=4)
     latest = df_enriched['日期'].max()
     day_map = {"近1个月": 30, "近3个月": 90, "近6个月": 180, "近1年": 365}
-    if time_frame in day_map:
-        df_f = df_enriched[df_enriched['日期'] >= (latest - pd.Timedelta(days=day_map[time_frame]))]
-    else:
-        df_f = df_enriched.copy()
+    df_f = df_enriched[df_enriched['日期'] >= (latest - pd.Timedelta(days=day_map[time_frame]))] if time_frame in day_map else df_enriched.copy()
 
     if not df_f.empty:
         c_ck, c_mn, c_mx = st.columns([1, 1, 1])
-        with c_ck:
-            manual_y = st.checkbox("手动锁定纵轴", value=False)
-        cur_min = float(df_f['单位净值'].min())
-        cur_max = float(df_f['当月最高价边界'].max())
+        with c_ck: manual_y = st.checkbox("手动锁定纵轴", value=False)
+        cur_min, cur_max = float(df_f['单位净值'].min()), float(df_f['当月最高价边界'].max())
         pad = (cur_max - cur_min) * 0.08 if cur_max != cur_min else 0.05
-        with c_mn:
-            y_min = st.number_input("Y轴下限", value=round(cur_min - pad, 2), step=0.02, disabled=not manual_y)
-        with c_mx:
-            y_max = st.number_input("Y轴上限", value=round(cur_max + pad, 2), step=0.02, disabled=not manual_y)
+        with c_mn: y_min = st.number_input("Y轴下限", value=round(cur_min - pad, 2), step=0.02, disabled=not manual_y)
+        with c_mx: y_max = st.number_input("Y轴上限", value=round(cur_max + pad, 2), step=0.02, disabled=not manual_y)
 
-        df_melted = df_f.melt(
-            id_vars=['日期'],
-            value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'],
-            var_name='指标', value_name='净值'
-        )
+        df_melted = df_f.melt(id_vars=['日期'], value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'], var_name='指标', value_name='净值')
         y_scale = alt.Scale(domain=[y_min, y_max], clamp=True) if manual_y else alt.Scale(zero=False, padding=15)
-        color_scale = alt.Scale(
-            domain=['单位净值', '月度平均价中枢', '当月最高价边界'],
-            range=['#58A6FF', '#2DA44E', '#F85149']
-        )
+        color_scale = alt.Scale(domain=['单位净值', '月度平均价中枢', '当月最高价边界'], range=['#58A6FF', '#2DA44E', '#F85149'])
+        
         chart = (
             alt.Chart(df_melted)
             .mark_line(strokeWidth=1.8)
@@ -919,21 +853,12 @@ if current_db:
     tab_y, tab_m, tab_d = st.tabs(["📅 年度汇总", "🌙 月度中枢", "📄 逐日明细"])
 
     with tab_y:
-        df_year = df_raw.groupby('年份').agg(
-            记录天数=('日期', 'count'),
-            期间涨跌=('净值增长率', 'sum'),
-            最高净值=('单位净值', 'max'),
-            最低净值=('单位净值', 'min')
-        ).reset_index().sort_values('年份', ascending=False)
+        df_year = df_raw.groupby('年份').agg(记录天数=('日期', 'count'), 期间涨跌=('净值增长率', 'sum'), 最高净值=('单位净值', 'max'), 最低净值=('单位净值', 'min')).reset_index().sort_values('年份', ascending=False)
         df_year['期间涨跌'] = df_year['期间涨跌'].map(lambda x: f"{x:+.2f}%")
         st.dataframe(df_year, use_container_width=True, hide_index=True)
 
     with tab_m:
-        df_month = df_raw.groupby('月份').agg(
-            月均净值=('单位净值', 'mean'),
-            月度最高=('单位净值', 'max'),
-            累计波动=('净值增长率', 'sum')
-        ).reset_index().sort_values('月份', ascending=False)
+        df_month = df_raw.groupby('月份').agg(月均净值=('单位净值', 'mean'), 月度最高=('单位净值', 'max'), 累计波动=('净值增长率', 'sum')).reset_index().sort_values('月份', ascending=False)
         df_month['月均净值'] = df_month['月均净值'].map(lambda x: f"{x:.4f}")
         df_month['月度最高'] = df_month['月度最高'].map(lambda x: f"{x:.4f}")
         df_month['累计波动'] = df_month['累计波动'].map(lambda x: f"{x:+.2f}%")
@@ -949,7 +874,6 @@ else:
     st.markdown("""
     <div class="strategy-box info">
     💡 该基金本地数据库为空。<br>
-    请使用上方控制台的 <strong>【批量导入】</strong> 粘贴历史净值，
-    或使用 <strong>【智能搬家】</strong> 自动从东方财富抓取数据。
+    请使用上方控制台的 <strong>【📋 批量导入】</strong> 粘贴历史数据，或点击 <strong>【🔄 智能搬家】</strong> 一键开启大盘追溯挖掘。
     </div>
     """, unsafe_allow_html=True)
