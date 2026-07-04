@@ -3,62 +3,11 @@ import pandas as pd
 import urllib.request
 import json
 import os
-from datetime import datetime
 
-# 设置网页标题和布局
+# 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
 st.title("📊 我的智能化定投实时监控看板")
 st.markdown("根据底层指数近 10 年真实 PE 百分位及 TTM 股息率，自动输出量化定投执行建议")
-
-# --- 强力移动端防乱码与防重叠 CSS 样式注入 ---
-st.markdown("""
-<style>
-    /* 1. 彻底根除 Streamlit 在部分手机浏览器下控制台、折叠组件文字与图标重叠的硬伤 */
-    [data-testid="stExpander"] svg { display: inline-block !important; }
-    span[data-testid="stMarkdownContainer"] { word-break: break-word !important; }
-    
-    /* 2. 针对手机屏幕(宽度小于768px)的专属响应式排版：将冷冰冰的表格自动转化为极其美观的卡片流 */
-    @media (max-width: 768px) {
-        .custom-table { border: 0 !important; }
-        .custom-table thead { display: none !important; } /* 手机端隐藏表头 */
-        .custom-table tr { 
-            display: block !important; 
-            margin-bottom: 15px !important; 
-            border: 1px solid #3A3F47 !important; 
-            border-radius: 8px !important; 
-            background-color: #161A1F !important;
-            padding: 10px !important;
-        }
-        .custom-table td { 
-            display: block !important; 
-            text-align: right !important; 
-            font-size: 13px !important; 
-            border: none !important; 
-            padding: 6px 10px !important;
-            border-bottom: 1px dashed #2A2F35 !important;
-        }
-        .custom-table td:last-child { border-bottom: none !important; text-align: left !important; background: #1E232A; border-radius: 4px; margin-top: 5px;}
-        /* 使用伪类在手机端为每一行数据前方加上说明标签 */
-        .custom-table td:nth-of-type(1):before { content: "基金代码："; float: left; font-weight: bold; color: #888; }
-        .custom-table td:nth-of-type(2):before { content: "跟踪指数："; float: left; font-weight: bold; color: #888; }
-        .custom-table td:nth-of-type(3):before { content: "定投计划："; float: left; font-weight: bold; color: #a1c4fd; }
-        .custom-table td:nth-of-type(4):before { content: "PE-TTM："; float: left; font-weight: bold; color: #888; }
-        .custom-table td:nth-of-type(5):before { content: "PE百分位："; float: left; font-weight: bold; color: #888; }
-        .custom-table td:nth-of-type(6):before { content: "TTM股息率："; float: left; font-weight: bold; color: #888; }
-        .custom-table td:nth-of-type(7):before { content: "资产快照："; float: left; font-weight: bold; color: #888; }
-        .custom-table td:nth-of-type(8):before { content: "💡 定投调整建议："; display: block; text-align: left; font-weight: bold; color: #ffb366; margin-bottom: 4px; }
-    }
-
-    /* 3. 电脑端标准大表格皮肤 */
-    @media (min-width: 769px) {
-        .custom-table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; color: #E0E0E0; }
-        .custom-table th { background-color: #1E232A; color: #FFFFFF; text-align: left; padding: 12px; border: 1px solid #3A3F47; }
-        .custom-table td { padding: 12px; border: 1px solid #3A3F47; white-space: normal !important; word-break: break-all; vertical-align: top; }
-        .custom-table tr:nth-child(even) { background-color: #161A1F; }
-        .custom-table tr:nth-child(odd) { background-color: #0E1116; }
-    }
-</style>
-""", unsafe_allow_html=True)
 
 CONFIG_FILE = "my_fund_settings.json"
 
@@ -88,27 +37,125 @@ DEFAULT_CONFIG = {
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
-        except: return DEFAULT_CONFIG
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return DEFAULT_CONFIG
     return DEFAULT_CONFIG
 
 def save_config(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(config, f, ensure_ascii=False, indent=4)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
 
 if 'fund_config' not in st.session_state:
     st.session_state.fund_config = load_config()
 
 @st.cache_data(ttl=1800)
 def get_fund_history_clean(fund_code):
+    """带高级容错与超时控制的净值抓取函数，确保任何情况下不阻断主程序"""
     try:
         url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex=1&pageSize=40"
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-        with urllib.request.urlopen(req, timeout=8) as response: html = response.read().decode('utf-8')
+        
+        # 云端环境将超时时间压缩到4秒，避免用户长时间面对白屏
+        with urllib.request.urlopen(req, timeout=4) as response:
+            html = response.read().decode('utf-8')
+        
         data = json.loads(html)
-        if data.get("Data") is None or not data["Data"].get("LSJZList"): return None, "暂无历史净值流水"
+        if not data or data.get("Data") is None or not data["Data"].get("LSJZList"):
+            return None, "云端接口未返回流水数据"
+            
         raw_list = data["Data"]["LSJZList"]
         records = []
         for item in raw_list:
-            if not item.get("FSRQ") or not item.get("DWJZ"): continue
+            if not item.get("FSRQ") or not item.get("DWJZ"):
+                continue
+            records.append({
+                "日期": item["FSRQ"],
+                "单位净值": float(item["DWJZ"]),
+                "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
+                "净值增长率": f"{item['JZZZL']}%" if item.get("JZZZL") else "0.00%"
+            })
+        
+        if not records:
+            return None, "未解析到有效历史日流水"
+        return pd.DataFrame(records), None
+        
+    except Exception as e:
+        # 网络超时或遭遇封锁时，直接捕获异常并返回错误提示，不向上传导崩溃
+        return None, f"云端网络延迟或接口暂被拦截 ({str(e)})"
+
+
+# --- 1. 首页核心：全景定投看板（采用原生高性能自适应组件） ---
+st.subheader("📋 我的定投核心资产配置与智能执行看板")
+
+summary_records = []
+for code, info in st.session_state.fund_config.items():
+    plan_str = f"{info['period']} {info['amount']}元"
+    strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
+    summary_records.append({
+        "基金代码": code,
+        "跟踪指数": info['index_name'],
+        "我的定投计划": plan_str,
+        "PE-TTM": f"{info['pe_ttm']:.2f}",
+        "近10年 PE 百分位": f"{info['pe_percent']:.2f}%",
+        "TTM 股息率": info['div_yield'],
+        "资产快照定性": info['status'],
+        "💡 实时动态定投调整建议": strategy_str
+    })
+
+df_summary = pd.DataFrame(summary_records)
+
+# 使用 Streamlit 官方原生数据表组件，在手机上支持完美原生平滑滚动，且带有一键复制、排序等健全功能，绝无重叠乱码
+st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+
+# --- 2. 【控制台】修改并永久保存定投计划 ---
+st.markdown("<br>", unsafe_allow_html=True)
+with st.expander("⚙️ 点击展开：修改并永久保存每支基金的定投计划"):
+    st.markdown("在此处更新你的计划，系统会自动修正排版并永久记住配置。")
+    edit_code = st.selectbox("选择基金", list(st.session_state.fund_config.keys()), 
+                             format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+    current_info = st.session_state.fund_config[edit_code]
+    
+    col_p, col_a = st.columns(2)
+    with col_p:
+        new_period = st.text_input("定投周期：", value=current_info['period'], key=f"p_{edit_code}")
+    with col_a:
+        new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10, key=f"a_{edit_code}")
+    
+    if st.button("💾 确认更新并永久保存计划"):
+        st.session_state.fund_config[edit_code]['period'] = new_period
+        st.session_state.fund_config[edit_code]['amount'] = new_amount
+        save_config(st.session_state.fund_config)
+        st.success("配置已成功固化到云端！页面即将自动刷新...")
+        st.rerun()
+
+st.markdown("<hr>", unsafe_allow_html=True)
+
+
+# --- 3. 基金穿透流水明细流 ---
+st.subheader("🔍 单只基金穿透详情")
+tabs = st.tabs([f"📄 {info['name']}" for info in st.session_state.fund_config.values()])
+
+for index, (code, info) in enumerate(st.session_state.fund_config.items()):
+    plan_str = f"{info['period']} {info['amount']}元"
+    strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
+    with tabs[index]:
+        st.warning(f"**当前定投模式**: {plan_str}")
+        st.info(f"**量化执行指引**: {strategy_str}")
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("10年市盈率分位", f"{info['pe_percent']:.2f}%")
+        c2.metric("当前估值 PE", f"{info['pe_ttm']:.2f}")
+        c3.metric("成份股滚动股息率", f"{info['div_yield']}")
+        
+        # 即使云端拉取失败，也会优雅提示，不阻塞整个 App 的正常渲染与保存功能
+        with st.spinner('正在尝试同步最新历史净值流水...'):
+            df_hist, err = get_fund_history_clean(code)
+        if err is None and df_hist is not None:
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+        else:
+            st.info(f"💡 提示：当前看盘核心指标正常运行。{err}（不影响你的定投计划调整与核心建议查看）")
