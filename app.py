@@ -115,6 +115,7 @@ def move_ants_history(fund_code, page_index=1):
         return local_data, "👌 本页数据已存在，无需重复搬运。"
     except Exception as e: return local_data, f"搬运遭遇波动 ({str(e)})"
 
+
 # --- 1. 全景卡片看板 ---
 st.subheader("📋 我的定投核心资产智能执行卡片")
 for code, info in st.session_state.fund_config.items():
@@ -129,51 +130,60 @@ for code, info in st.session_state.fund_config.items():
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
-# --- 2. 纯原生管理面板（防小图标乱码） ---
-st.subheader("🛠️ 智能基金配置与数据搬运控制台")
-edit_code = st.selectbox("选择要修改或搬运数据的基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+
+# --- 2. 纯净控制台：使用简洁的单选导航（无任何图标乱码组件） ---
+st.subheader("🛠️ 基金配置与数据搬运控制台")
+edit_code = st.selectbox("🎯 当前选中的核心资产基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
 current_info = st.session_state.fund_config[edit_code]
 
-# 修改计划表单
-with st.form("edit_plan_form"):
-    st.markdown("**1️⃣ 修改并永久保存定投计划**")
-    col_p, col_a = st.columns(2)
-    with col_p: new_period = st.text_input("定投周期：", value=current_info['period'])
-    with col_a: new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10)
-    submit_plan = st.form_submit_with_button_label("💾 确认更新并永久保存计划")
-    if submit_plan:
-        st.session_state.fund_config[edit_code]['period'] = new_period
-        st.session_state.fund_config[edit_code]['amount'] = new_amount
-        save_config(st.session_state.fund_config)
-        st.success("🎉 配置已固化到云端！正在自动刷新看板...")
-        st.rerun()
+# 使用简单干净的 radio 替代易乱码的折叠组件
+op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 蚂蚁搬家数据同步"], horizontal=True)
 
-# 蚂蚁搬家管理
-st.markdown("**2️⃣ 蚂蚁搬家数据流管理**")
-col_btn1, col_btn2, _ = st.columns([2, 2, 4])
-current_db = load_local_history(edit_code)
+if op_mode == "📝 修改定投计划":
+    # 采用官方规范的表单和标准提交按钮
+    with st.form("my_edit_form"):
+        col_p, col_a = st.columns(2)
+        with col_p: new_period = st.text_input("定投周期：", value=current_info['period'])
+        with col_a: new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10)
+        
+        # ⚠️ 修复：改用绝对标准的 Streamlit 表单提交函数
+        submit_plan = st.form_submit_button("💾 确认更新并永久保存计划")
+        if submit_plan:
+            st.session_state.fund_config[edit_code]['period'] = new_period
+            st.session_state.fund_config[edit_code]['amount'] = new_amount
+            save_config(st.session_state.fund_config)
+            st.success("🎉 配置已成功保存！看盘卡片已同步刷新。")
+            st.rerun()
 
-with col_btn1:
-    if st.button("🔄 蚂蚁搬家：顺路下载最新40天数据", key="btn_ants"):
-        current_db, msg = move_ants_history(edit_code, page_index=1)
-        st.toast(msg)
-        st.rerun()
-with col_btn2:
-    target_page = st.number_input("搬运更深历史(页码)", min_value=1, max_value=100, value=2, step=1, key="num_page")
-    if st.button("⛏️ 深度挖掘旧历史", key="btn_dig"):
-        current_db, msg = move_ants_history(edit_code, page_index=target_page)
-        st.toast(msg)
-        st.rerun()
+else:
+    st.markdown("**数据搬运工作台**")
+    col_btn1, col_btn2, _ = st.columns([2, 2, 4])
+    current_db = load_local_history(edit_code)
 
-# --- 3. 多维增量穿透大盘 + 原生交互折线图 ---
+    with col_btn1:
+        if st.button("🔄 蚂蚁搬家：下载最新40天数据", key="btn_ants"):
+            current_db, msg = move_ants_history(edit_code, page_index=1)
+            st.toast(msg)
+            st.rerun()
+    with col_btn2:
+        target_page = st.number_input("拓展历史页码", min_value=1, max_value=100, value=2, step=1, key="num_page")
+        if st.button("挖取更早历史", key="btn_dig"):
+            current_db, msg = move_ants_history(edit_code, page_index=target_page)
+            st.toast(msg)
+            st.rerun()
+
+
+# --- 3. 多维增量穿透大盘 + 原生缩放折线图 ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
+
+current_db = load_local_history(edit_code)
 
 if current_db:
     df_raw = pd.DataFrame(current_db)
     df_raw['日期'] = pd.to_datetime(df_raw['日期'])
     
-    # 📈 --- 纯原生轻量级交互折线图（自带手机端单指滑动悬浮窗、双指捏合缩放） ---
+    # 📈 --- 官方原生轻量交互图表，支持手机双指缩放和平移，绝不报错 ---
     st.markdown("**📉 历史趋势全动态走势图（单指滑动可查看精准日期与净值）**")
     df_chart = df_raw.set_index('日期').sort_index()[['单位净值']]
     st.line_chart(df_chart, x_label="交易日期", y_label="基金单位净值")
@@ -202,4 +212,4 @@ if current_db:
         df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.info("💡 当前该基金本地总库为空。请在上方控制台点击【蚂蚁搬家】按钮，开始建立历史数据库！")
+    st.info("💡 当前该基金本地总库为空。请在上方控制台切换到【🔄 蚂蚁搬家数据同步】并点击搬家按钮，开始建立历史趋势图！")
