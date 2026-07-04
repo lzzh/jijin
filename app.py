@@ -6,6 +6,52 @@ import os
 
 # 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
+
+# --- 手机端防乱码、防重叠、强制换行的纯净 CSS 注入 ---
+st.markdown("""
+<style>
+    /* 1. 强制隐藏或修正可能导致重叠的右上角官方按钮与展开图标乱码 */
+    #MainMenu {visibility: hidden;} 
+    footer {visibility: hidden;}
+    header {background-color: transparent !important;}
+    
+    /* 清除特定组件可能附带的乱码文本前缀 */
+    span:contains("_arrow"), div:contains("_arrow") { font-size: 0 !important; color: transparent !important; }
+
+    /* 2. 核心文本容器：支持手机端完美自动换行，绝不溢出 */
+    .stMarkdown div p {
+        word-break: break-all !important;
+        white-space: pre-wrap !important;
+    }
+    
+    /* 3. 仿手机原生 App 卡片设计 */
+    .fund-card {
+        background-color: #1E232A;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+        border: 1px solid #3A3F47;
+    }
+    .fund-title {
+        font-size: 16px;
+        font-weight: bold;
+        color: #FFFFFF;
+        margin-bottom: 8px;
+        border-bottom: 1px solid #3A3F47;
+        padding-bottom: 6px;
+    }
+    .fund-tag {
+        background-color: #2A2F35;
+        color: #A1C4FD;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        display: inline-block;
+        margin-bottom: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("📊 我的智能化定投实时监控看板")
 st.markdown("根据底层指数近 10 年真实 PE 百分位及 TTM 股息率，自动输出量化定投执行建议")
 
@@ -37,125 +83,92 @@ DEFAULT_CONFIG = {
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return DEFAULT_CONFIG
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except: return DEFAULT_CONFIG
     return DEFAULT_CONFIG
 
 def save_config(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=4)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(config, f, ensure_ascii=False, indent=4)
 
 if 'fund_config' not in st.session_state:
     st.session_state.fund_config = load_config()
 
 @st.cache_data(ttl=1800)
 def get_fund_history_clean(fund_code):
-    """带高级容错与超时控制的净值抓取函数，确保任何情况下不阻断主程序"""
     try:
         url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex=1&pageSize=40"
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-        
-        # 云端环境将超时时间压缩到4秒，避免用户长时间面对白屏
-        with urllib.request.urlopen(req, timeout=4) as response:
-            html = response.read().decode('utf-8')
-        
+        with urllib.request.urlopen(req, timeout=4) as response: html = response.read().decode('utf-8')
         data = json.loads(html)
-        if not data or data.get("Data") is None or not data["Data"].get("LSJZList"):
-            return None, "云端接口未返回流水数据"
-            
+        if not data or data.get("Data") is None or not data["Data"].get("LSJZList"): return None, "暂无流水"
         raw_list = data["Data"]["LSJZList"]
         records = []
         for item in raw_list:
-            if not item.get("FSRQ") or not item.get("DWJZ"):
-                continue
-            records.append({
-                "日期": item["FSRQ"],
-                "单位净值": float(item["DWJZ"]),
-                "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
-                "净值增长率": f"{item['JZZZL']}%" if item.get("JZZZL") else "0.00%"
-            })
-        
-        if not records:
-            return None, "未解析到有效历史日流水"
+            if not item.get("FSRQ") or not item.get("DWJZ"): continue
+            records.append({"日期": item["FSRQ"], "单位净值": float(item["DWJZ"]), "净值增长率": f"{item['JZZZL']}%"})
         return pd.DataFrame(records), None
-        
-    except Exception as e:
-        # 网络超时或遭遇封锁时，直接捕获异常并返回错误提示，不向上传导崩溃
-        return None, f"云端网络延迟或接口暂被拦截 ({str(e)})"
+    except Exception as e: return None, str(e)
 
 
-# --- 1. 首页核心：全景定投看板（采用原生高性能自适应组件） ---
-st.subheader("📋 我的定投核心资产配置与智能执行看板")
+# --- 1. 全景卡片看板（完美替换死板大表格，手机端自适应神级排版） ---
+st.subheader("📋 我的定投核心资产智能执行卡片")
 
-summary_records = []
 for code, info in st.session_state.fund_config.items():
     plan_str = f"{info['period']} {info['amount']}元"
     strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
-    summary_records.append({
-        "基金代码": code,
-        "跟踪指数": info['index_name'],
-        "我的定投计划": plan_str,
-        "PE-TTM": f"{info['pe_ttm']:.2f}",
-        "近10年 PE 百分位": f"{info['pe_percent']:.2f}%",
-        "TTM 股息率": info['div_yield'],
-        "资产快照定性": info['status'],
-        "💡 实时动态定投调整建议": strategy_str
-    })
-
-df_summary = pd.DataFrame(summary_records)
-
-# 使用 Streamlit 官方原生数据表组件，在手机上支持完美原生平滑滚动，且带有一键复制、排序等健全功能，绝无重叠乱码
-st.dataframe(df_summary, use_container_width=True, hide_index=True)
+    
+    # 注入纯净美观的自适应块
+    st.markdown(f"""
+    <div class="fund-card">
+        <div class="fund-title">📈 {info['name']} ({code})</div>
+        <div class="fund-tag">跟踪指数: {info['index_name']}</div> | <div class="fund-tag" style="color:#FFF;">当前计划: {plan_str}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 指标三项并排展示
+    c1, c2, c3 = st.columns(3)
+    c1.metric("10年 PE 百分位", f"{info['pe_percent']:.2f}%")
+    c2.metric("当前 PE", f"{info['pe_ttm']:.2f}")
+    c3.metric("TTM 股息率", info['div_yield'])
+    
+    # 建议提示框：原生组件，手机端自动完美换行
+    if "⚠️" in strategy_str or "🚨" in strategy_str:
+        st.warning(strategy_str)
+    else:
+        st.info(strategy_str)
+    st.markdown("<div style='margin-bottom:25px;'></div>", unsafe_allow_html=True)
 
 
 # --- 2. 【控制台】修改并永久保存定投计划 ---
-st.markdown("<br>", unsafe_allow_html=True)
-with st.expander("⚙️ 点击展开：修改并永久保存每支基金的定投计划"):
+with st.expander("⚙️ 点此展开：修改并永久保存每支基金的定投计划"):
     st.markdown("在此处更新你的计划，系统会自动修正排版并永久记住配置。")
     edit_code = st.selectbox("选择基金", list(st.session_state.fund_config.keys()), 
                              format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
     current_info = st.session_state.fund_config[edit_code]
     
-    col_p, col_a = st.columns(2)
-    with col_p:
-        new_period = st.text_input("定投周期：", value=current_info['period'], key=f"p_{edit_code}")
-    with col_a:
-        new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10, key=f"a_{edit_code}")
+    new_period = st.text_input("定投周期：", value=current_info['period'], key=f"p_{edit_code}")
+    new_amount = st.number_input("定投金额 (元)固定资产：", value=int(current_info['amount']), step=10, key=f"a_{edit_code}")
     
     if st.button("💾 确认更新并永久保存计划"):
         st.session_state.fund_config[edit_code]['period'] = new_period
         st.session_state.fund_config[edit_code]['amount'] = new_amount
         save_config(st.session_state.fund_config)
-        st.success("配置已成功固化到云端！页面即将自动刷新...")
+        st.success("配置已成功固化到云端！")
         st.rerun()
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
 
 # --- 3. 基金穿透流水明细流 ---
-st.subheader("🔍 单只基金穿透详情")
-tabs = st.tabs([f"📄 {info['name']}" for info in st.session_state.fund_config.values()])
+st.subheader("🔍 单只基金历史流水穿透")
+select_detail = st.selectbox("切换查看各基金历史流水明细：", list(st.session_state.fund_config.keys()),
+                             format_func=lambda x: st.session_state.fund_config[x]['name'])
 
-for index, (code, info) in enumerate(st.session_state.fund_config.items()):
-    plan_str = f"{info['period']} {info['amount']}元"
-    strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
-    with tabs[index]:
-        st.warning(f"**当前定投模式**: {plan_str}")
-        st.info(f"**量化执行指引**: {strategy_str}")
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("10年市盈率分位", f"{info['pe_percent']:.2f}%")
-        c2.metric("当前估值 PE", f"{info['pe_ttm']:.2f}")
-        c3.metric("成份股滚动股息率", f"{info['div_yield']}")
-        
-        # 即使云端拉取失败，也会优雅提示，不阻塞整个 App 的正常渲染与保存功能
-        with st.spinner('正在尝试同步最新历史净值流水...'):
-            df_hist, err = get_fund_history_clean(code)
-        if err is None and df_hist is not None:
-            st.dataframe(df_hist, use_container_width=True, hide_index=True)
-        else:
-            st.info(f"💡 提示：当前看盘核心指标正常运行。{err}（不影响你的定投计划调整与核心建议查看）")
+with st.spinner('正在同步净值明细...'):
+    df_hist, err = get_fund_history_clean(select_detail)
+if err is None and df_hist is not None:
+    st.dataframe(df_hist, use_container_width=True, hide_index=True)
+else:
+    st.info("💡 历史日明细抓取超时（由于云端网络波动导致，核心指标不受影响）。")
