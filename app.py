@@ -2,61 +2,82 @@ import streamlit as st
 import pandas as pd
 import urllib.request
 import json
+import os
 from datetime import datetime
 
 # 设置网页标题和布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
 st.title("📊 我的智能化定投实时监控看板")
-st.markdown("根据底层指数近 10 年真实 PE 百分位及 TTM 股息率，自动输出量化定投执行建议（支持动态修改定投计划）")
+st.markdown("根据底层指数近 10 年真实 PE 百分位及 TTM 股息率，自动输出量化定投执行建议（支持永久保存定投计划）")
 
-# --- 1. 初始化 Session State（确保用户修改的定投计划不会因页面刷新而丢失） ---
+CONFIG_FILE = "my_fund_settings.json"
+
+# 默认的初始配置
+DEFAULT_CONFIG = {
+    '008163': {
+        'name': '南方标普红利低波50ETF联接A', 
+        'index_name': '标普红利低波50',
+        'period': '每月21号',
+        'amount': 1100,
+        'pe_ttm': 8.22, 
+        'pe_percent': 84.82,  
+        'div_yield': '4.85%', 
+        'status': '估值偏高、股息最优',
+        'base_strategy': '⚠️ 估值百分位偏高(>80%)。虽然4.85%的股息极具防守性，但短期拥挤度高。建议【维持当前定投不加仓】，或将当前的 {plan} 缩减20%，积攒现金。'
+    }, 
+    '016452': {
+        'name': '南方纳斯达克100指数发起（QDII）A', 
+        'index_name': '纳斯达克100',
+        'period': '每天',
+        'amount': 80,
+        'pe_ttm': 34.03, 
+        'pe_percent': 76.97, 
+        'div_yield': '0.36%', 
+        'status': '显著高估、轻微红利',
+        'base_strategy': '🚨 处于历史高位区间。美股科技股目前溢价较高，且无红利保护。建议将当前的 {plan} 【下调至 {half_amount} 元左右（防御模式）】，保留子弹等待回调。'
+    }, 
+    '023882': {
+        'name': '华夏创业板50ETF发起式联接A', 
+        'index_name': '创业板50',
+        'period': '每周二',
+        'amount': 100,
+        'pe_ttm': 44.48, 
+        'pe_percent': 60.78, 
+        'div_yield': '0.80%', 
+        'status': '中性偏贵、低股息',
+        'base_strategy': '等权观望。估值处于60%的中枢偏上位置，成长股弹性较大。建议【严格执行常规计划 {plan}】，不主动防御也不盲目加仓，保持自动扣款。'
+    },   
+    '023917': {
+        'name': '华夏国证自由现金流ETF发起式联接A', 
+        'index_name': '国证自由现金流',
+        'period': '每周二',
+        'amount': 790,
+        'pe_ttm': 11.68, 
+        'pe_percent': 30.77, 
+        'div_yield': '3.20%', 
+        'status': '深度低估、均衡现金流',
+        'base_strategy': '💎 绝对核心加仓区！PE分位仅30.77%且股息率高达3.2%。属于典型的性价比高地。建议【坚定执行当前计划 {plan}】，甚至可在发薪日额外手动肉身加仓。'
+    }   
+}
+
+def load_config():
+    """从本地 JSON 文件读取配置，如果文件不存在则使用默认配置"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return DEFAULT_CONFIG
+    return DEFAULT_CONFIG
+
+def save_config(config):
+    """将配置永久保存到本地 JSON 文件中"""
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+
+# --- 核心数据加载：确保每次运行都读取最新的持久化文件 ---
 if 'fund_config' not in st.session_state:
-    st.session_state.fund_config = {
-        '008163': {
-            'name': '南方标普红利低波50ETF联接A', 
-            'index_name': '标普红利低波50',
-            'period': '每月21号',
-            'amount': 1100,
-            'pe_ttm': 8.22, 
-            'pe_percent': 84.82,  
-            'div_yield': '4.85%', 
-            'status': '估值偏高、股息最优',
-            'base_strategy': '⚠️ 估值百分位偏高(>80%)。虽然4.85%的股息极具防守性，但短期拥挤度高。建议【维持当前定投不加仓】，或将当前的 {plan} 缩减20%，积攒现金。'
-        }, 
-        '016452': {
-            'name': '南方纳斯达克100指数发起（QDII）A', 
-            'index_name': '纳斯达克100',
-            'period': '每天',
-            'amount': 80,
-            'pe_ttm': 34.03, 
-            'pe_percent': 76.97, 
-            'div_yield': '0.36%', 
-            'status': '显著高估、轻微红利',
-            'base_strategy': '🚨 处于历史高位区间。美股科技股目前溢价较高，且无红利保护。建议将当前的 {plan} 【下调至 {half_amount} 元左右（防御模式）】，保留子弹等待回调。'
-        }, 
-        '023882': {
-            'name': '华夏创业板50ETF发起式联接A', 
-            'index_name': '创业板50',
-            'period': '每周二',
-            'amount': 100,
-            'pe_ttm': 44.48, 
-            'pe_percent': 60.78, 
-            'div_yield': '0.80%', 
-            'status': '中性偏贵、低股息',
-            'base_strategy': '等权观望。估值处于60%的中枢偏上位置，成长股弹性较大。建议【严格执行常规计划 {plan}】，不主动防御也不盲目加仓，保持自动扣款。'
-        },   
-        '023917': {
-            'name': '华夏国证自由现金流ETF发起式联接A', 
-            'index_name': '国证自由现金流',
-            'period': '每周二',
-            'amount': 790,
-            'pe_ttm': 11.68, 
-            'pe_percent': 30.77, 
-            'div_yield': '3.20%', 
-            'status': '深度低估、均衡现金流',
-            'base_strategy': '💎 绝对核心加仓区！PE分位仅30.77%且股息率高达3.2%。属于典型的性价比高地。建议【坚定执行当前计划 {plan}】，甚至可在发薪日额外手动肉身加仓。'
-        }   
-    }
+    st.session_state.fund_config = load_config()
 
 @st.cache_data(ttl=1800)
 def get_fund_history_clean(fund_code):
@@ -91,19 +112,13 @@ def get_fund_history_clean(fund_code):
         return None, str(e)
 
 
-# --- 2. 首页核心：全景定投智能化诊断大表（从状态机中动态读取和拼接） ---
+# --- 2. 首页核心：全景定投智能化诊断大表 ---
 st.subheader("📋 我的定投核心资产配置与智能执行看板")
 
 summary_records = []
 for code, info in st.session_state.fund_config.items():
-    # 动态组装定投计划字符串
     plan_str = f"{info['period']} {info['amount']}元"
-    
-    # 动态把新的计划金额塞进建议文本里
-    strategy_str = info['base_strategy'].format(
-        plan=plan_str, 
-        half_amount=int(info['amount'] / 2)
-    )
+    strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
     
     summary_records.append({
         "基金代码": code,
@@ -118,7 +133,6 @@ for code, info in st.session_state.fund_config.items():
 
 df_summary = pd.DataFrame(summary_records)
 
-# CSS 样式表，保持完美换行
 html_style = """
 <style>
     .custom-table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; color: #E0E0E0; }
@@ -132,10 +146,10 @@ table_html = df_summary.to_html(classes='custom-table', index=False, escape=Fals
 st.markdown(html_style + table_html, unsafe_allow_html=True)
 
 
-# --- 3. 【控制台】动态修改定投计划（周期与金额） ---
+# --- 3. 【控制台】动态修改并永久保存定投计划 ---
 st.markdown("<br>", unsafe_allow_html=True)
-with st.expander("⚙️ 点击展开：修改每支基金的定投计划（周期/金额）"):
-    st.markdown("如果你的定投扣款金额或频率发生了变更，请在下方修改：")
+with st.expander("⚙️ 点击展开：修改并永久保存每支基金的定投计划（周期/金额）"):
+    st.markdown("在这里修改计划后，数据将永久保存在云端，刷新网页也不会丢失：")
     
     edit_code = st.selectbox("选择要修改定投计划的基金", list(st.session_state.fund_config.keys()), 
                              format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
@@ -148,10 +162,14 @@ with st.expander("⚙️ 点击展开：修改每支基金的定投计划（周�
     with col_a:
         new_amount = st.number_input(f"修改【{current_info['name']}】的每期定投金额 (元)：", value=int(current_info['amount']), step=10)
     
-    if st.button(f"💾 确认更新 {edit_code} 的定投计划"):
+    if st.button(f"💾 确认更新并永久保存 {edit_code} 的定投计划"):
+        # 1. 更新内存状态
         st.session_state.fund_config[edit_code]['period'] = new_period
         st.session_state.fund_config[edit_code]['amount'] = new_amount
-        st.success(f"更新成功！【{current_info['name']}】已变更为 {new_period} {new_amount}元。")
+        # 2. 写入 JSON 文件进行永久归档
+        save_config(st.session_state.fund_config)
+        
+        st.success(f"更新并永久保存成功！【{current_info['name']}】已变更为 {new_period} {new_amount}元。")
         st.rerun()
 
 
