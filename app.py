@@ -69,7 +69,7 @@ def move_ants_history(fund_code, page_index=1):
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
         with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
         data = json.loads(html)
-        if data and data.get("Data") is None: return local_data, "云端接口限流，请稍后再试。"
+        if data and data.get("Data") is None: return local_data, 0, "限流"
         raw_list = data["Data"]["LSJZList"]
         new_count = 0
         existing_dates = {item['日期'] for item in local_data}
@@ -84,9 +84,9 @@ def move_ants_history(fund_code, page_index=1):
         if new_count > 0:
             local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
             save_local_history(fund_code, local_data)
-            return local_data, f"🎉 成功搬运 {new_count} 天数据！"
-        return local_data, "👌 数据已最新，无需更新。"
-    except Exception as e: return local_data, f"波动 ({str(e)})"
+            return local_data, new_count, "成功"
+        return local_data, 0, "无新数据"
+    except Exception as e: return local_data, 0, f"波动({str(e)})"
 
 
 # --- 1. 全景卡片看板 ---
@@ -104,12 +104,12 @@ for code, info in st.session_state.fund_config.items():
 st.markdown("<hr>", unsafe_allow_html=True)
 
 
-# --- 2. 纯净控制台：集成三大核心功能 ---
+# --- 2. 纯净控制台 ---
 st.subheader("🛠️ 基金综合管理控制台")
-edit_code = st.selectbox("🎯 当前选中的基金（用于数据穿透查看）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+edit_code = st.selectbox("🎯 当前选中的基金（用于下方数据穿透查看）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
 current_info = st.session_state.fund_config[edit_code]
 
-op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 蚂蚁搬家数据同步", "✨ 快捷添加新基金"], horizontal=True)
+op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能批量搬家工作台", "✨ 快捷添加新基金"], horizontal=True)
 
 # 功能 A：修改计划
 if op_mode == "📝 修改定投计划":
@@ -125,34 +125,46 @@ if op_mode == "📝 修改定投计划":
             st.success("🎉 配置已成功保存！看盘卡片已同步刷新。")
             st.rerun()
 
-# 功能 B：增量搬运数据流
-elif op_mode == "🔄 蚂蚁搬家数据同步":
-    st.markdown("#### 🚀 一键全员同步机制（省时省力）")
-    if st.button("🔥 触发：一键全员下载最新一页（第1页）数据"):
-        success_funds = []
-        progress_bar = st.progress(0)
+# 功能 B：全员一键多页连挖数据同步（核心升级）
+elif op_mode == "🔄 🛠️ 智能批量搬家工作台":
+    st.markdown("#### 🚀 全员多页联动增量搬运机制")
+    st.caption("设置下方深度后，点击启动按钮，系统会【全自动】遍历自选池里的所有基金，并按顺序抓取指定页码，无需挨个点按钮。")
+    
+    # 动态滑块：决定这次一键搬家搬几页
+    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2, help="1页=40天数据。选择3页意味着全员自动下载第1、2、3页，合力斩获120天历史！")
+    
+    if st.button(f"🔥 启动：全员一键追溯前 {max_pages} 页历史数据"):
         all_codes = list(st.session_state.fund_config.keys())
+        total_steps = len(all_codes) * max_pages
+        step_now = 0
         
-        for idx, code in enumerate(all_codes):
-            _, msg = move_ants_history(code, page_index=1)
-            success_funds.append(f"• **{code}**: {msg}")
-            progress_bar.progress((idx + 1) / len(all_codes))
-            time.sleep(0.2) # 微秒级延迟，确保接口安全
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        summary_results = {}
+        for code in all_codes:
+            summary_results[code] = 0
             
-        st.success("📊 【全员最新数据同步完毕！】各基金同步状态如下：")
-        for res in success_funds:
-            st.markdown(res)
+        # 开始双重嵌套大循环：先基金，后页码
+        for code in all_codes:
+            f_name = st.session_state.fund_config[code]['name']
+            for p_idx in range(1, max_pages + 1):
+                step_now += 1
+                status_text.markdown(f"⏳ 正在搬运：**{f_name}** 的第 **{p_idx}** 页数据...")
+                
+                # 执行搬家
+                _, added_num, _ = move_ants_history(code, page_index=p_idx)
+                summary_results[code] += added_num
+                
+                # 更新进度条
+                progress_bar.progress(step_now / total_steps)
+                time.sleep(0.25) # 极小延时保护云端环境安全
+                
+        status_text.empty()
+        st.success(f"🎉 【多页连击搬运大获全胜！】已为你成功合并、去重并持久化以下增量数据：")
+        for code, count in summary_results.items():
+            st.markdown(f"• 基金 **{code}** ({st.session_state.fund_config[code]['name']})：本轮净增 **{count}** 天历史价格账本！")
         st.rerun()
-        
-    st.markdown("---")
-    st.markdown("#### ⛏️ 针对当前选中基金深度挖掘老历史")
-    col_btn1, _ = st.columns([3, 5])
-    with col_btn1:
-        target_page = st.number_input("拓展历史页码", min_value=1, max_value=100, value=2, step=1, key="num_page")
-        if st.button("挖掘该基金此页老历史", key="btn_dig"):
-            _, msg = move_ants_history(edit_code, page_index=target_page)
-            st.toast(msg)
-            st.rerun()
 
 # 功能 C：动态添加新基金
 else:
@@ -162,7 +174,6 @@ else:
         add_name = st.text_input("请输入基金简称（例如：天弘计算机C）：")
         add_index = st.text_input("关联跟踪的指数名称（例如：计算机指数）：")
         
-        st.caption("💡 提示：新基金的估值数据（PE/股息率）会在后续接入实时API后自动更新，此处先初始化基础定投规则。")
         col_ap1, col_ap2 = st.columns(2)
         with col_ap1: add_period = st.text_input("设定定投周期：", value="每周二")
         with col_ap2: add_amount = st.number_input("设定定投金额(元)：", value=100, step=10)
@@ -179,7 +190,7 @@ else:
                     'index_name': add_index if add_index else '自定义指数',
                     'period': add_period,
                     'amount': add_amount,
-                    'pe_ttm': 20.0, # 初始给个中性占位值
+                    'pe_ttm': 20.0,
                     'pe_percent': 50.0,
                     'div_yield': '1.50%',
                     'status': '新入库跟踪',
@@ -190,7 +201,7 @@ else:
                 st.rerun()
 
 
-# --- 3. 多维增量穿透大盘 + 原生缩放折线图 ---
+# --- 3. 多维增量穿透大盘 ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
@@ -227,4 +238,4 @@ if current_db:
         df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.info("💡 当前该基金本地总库为空。请在控制台切换到【🔄 蚂蚁搬家数据同步】触发同步，开始建立历史趋势图！")
+    st.info("💡 当前该基金本地总库为空。请在控制台切换到【🔄 🛠️ 智能批量搬家工作台】触发多页搬运，一键建立图表！")
