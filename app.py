@@ -435,12 +435,12 @@ for code, info in st.session_state.fund_config.items():
     </div>
     """, unsafe_allow_html=True)
 
-# 临时用于在工作台外部读取当前选中的基金
+# 初始化跨组件通信变量：读取全局当前选定的联动基金代码
 if 'global_sheet_select' not in st.session_state:
     st.session_state.global_sheet_select = list(st.session_state.fund_config.keys())[0]
 
 # ══════════════════════════════════════════════
-#  § 2  多维视窗走势图表（移至中间展示）
+#  § 2  多维视窗走势图表
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 edit_code = st.session_state.global_sheet_select
@@ -502,20 +502,19 @@ if current_db:
         df_d['净值增长率'] = df_d['净值增长率'].map(lambda x: f"{x:+.2f}%")
         st.dataframe(df_d[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.markdown('<div class="strategy-box info">💡 本地数据空白，请点击下方控制台上的“联网同步”或使用“混贴导入”。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="strategy-box info">💡 本地数据空白，请在下方控制台执行“联网同步”或使用“混贴导入”。</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 3  数据仓储与控制工作台（移动至页面最下方）
+#  § 3  数据仓储与控制工作台（已移动到页面最下方）
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-label">数据仓储与控制工作台</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
-# 按钮标签点按切换结构
 tab_sync, tab_manage = st.tabs(["⚡ 数据更新与批量导入 (Sheet 合并版)", "🔧 资产卡片维护"])
 
-# ➡️ Tab 1: 智能全网抓取与粘贴文本批量导入合并面板
+# ➡️ Tab 1: 全网自动抓取与粘贴文本批量导入合并面板
 with tab_sync:
     st.markdown("##### 🚀 第一步：联网自动对齐全网最新数据")
     c_sync1, c_sync2 = st.columns([2, 1])
@@ -553,8 +552,14 @@ with tab_sync:
     st.markdown("<hr style='margin:20px 0; border-color:#21262D;'>", unsafe_allow_html=True)
     
     st.markdown("##### 📋 第二步：混贴文本批量导入历史净值流水")
-    # 选择时同步写入 session_state 以便上方图表联动刷新
-    edit_code = st.selectbox("选择要导入流水或查看走势的目标基金", list(st.session_state.fund_config.keys()), index=list(st.session_state.fund_config.keys()).index(st.session_state.global_sheet_select), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", key="sheet_select")
+    # 允许在此处切换目标基金，并通过 Session State 强制上方走势图表保持精确的联动同步
+    edit_code = st.selectbox(
+        "选择要导入流水或查看走势的目标基金", 
+        list(st.session_state.fund_config.keys()), 
+        index=list(st.session_state.fund_config.keys()).index(st.session_state.global_sheet_select), 
+        format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", 
+        key="sheet_select"
+    )
     if edit_code != st.session_state.global_sheet_select:
         st.session_state.global_sheet_select = edit_code
         st.rerun()
@@ -606,7 +611,7 @@ with tab_sync:
             else:
                 st.warning("⚠️ 粘贴板文本为空")
 
-# ➡️ Tab 2: 资产卡片及定投计划维护
+# ➡️ Tab 2: 资产卡片及定投计划维护（删除手动微调资产属性表单，仅保留卡片本身基础计划和增减管理）
 with tab_manage:
     st.markdown("##### ⚙️ 单项定投计划微调")
     manage_code = st.selectbox("选择维护项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", key="plan_manage_select")
