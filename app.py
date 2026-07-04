@@ -6,6 +6,7 @@ import os
 import time
 import random
 import re
+import requests
 import altair as alt
 
 st.set_page_config(page_title="定投监控看板", layout="centered", initial_sidebar_state="collapsed")
@@ -193,7 +194,7 @@ html, body, [class*="css"] {
     background: #0D1117;
     border: 1px solid #1F2937;
     border-radius: 12px;
-    padding: 14px;
+    padding: 16px;
 }
 
 div[data-testid="stSelectbox"] > div > div,
@@ -263,92 +264,49 @@ def save_local_history(fund_code, data_list):
     json.dump(data_list, open(os.path.join(HISTORY_DIR, f"{fund_code}_hist.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=4)
 
 # ══════════════════════════════════════════════
-#  🌐 核心突破：全自动估值异步抓取爬虫（告别手动输入！）
+#  🌐 核心接口：全自动估值联网抓取爬虫
 # ══════════════════════════════════════════════
 def fetch_latest_valuation_online(fund_code):
-    """
-    通过天天基金或东财网的基金综合诊断/详情接口，实时抓取指数估值核心数据
-    包含当前PE、历史百分位、股息率
-    """
-    import requests
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': f'https://fund.eastmoney.com/{fund_code}.html'
     }
-    # 采用东财天天基金移动端指数估值/综合诊断高频数据接口
     url = f"https://fundmobapi.eastmoney.com/FundMApi/FundVarietieValuationDetail?FCODE={fund_code}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
-    
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         res_json = resp.json()
-        
         if res_json and res_json.get("Expansion") and res_json["Expansion"].get("GZData"):
             gz = res_json["Expansion"]["GZData"]
-            # 提取接口回传的估值字段
             pe_ttm = float(gz.get("PE", 0))
             pe_percent = float(gz.get("PE_PERCENT", 0))
             div_yield = gz.get("D_YIELD", "0.00%")
-            
-            # 若百分位和PE抓取成功，非0，则返回
             if pe_ttm > 0 or pe_percent > 0:
                 if "%" not in str(div_yield):
                     div_yield = f"{float(div_yield):.2f}%"
                 return pe_ttm, pe_percent, div_yield
-    except Exception as e:
-        pass
-        
-    # 备用方案：若移动端专属估值接口不包含该场外指数，则使用特征基准估算
+    except: pass
     try:
         html_url = f"https://fund.eastmoney.com/pinggu/{fund_code}.html"
         r = requests.get(html_url, headers=headers, timeout=10)
         r.encoding = 'utf-8'
         text = r.text
-        # 通过正规表达式捕获页面上挂载的最新诊断估值数
         pe_match = re.search(r'当前PE：.*?([0-9.]+)', text)
         pct_match = re.search(r'历史百分位：.*?([0-9.]+)%', text)
         div_match = re.search(r'股息率：.*?([0-9.]+)%', text)
-        
         pe = float(pe_match.group(1)) if pe_match else None
         pct = float(pct_match.group(1)) if pct_match else None
         div = f"{div_match.group(1)}%" if div_match else None
-        if pe or pct:
-            return pe or 15.0, pct or 50.0, div or "1.50%"
-    except:
-        pass
-        
+        if pe or pct: return pe or 15.0, pct or 50.0, div or "1.50%"
+    except: pass
     return None
 
-# ══════════════════════════════════════════════
-#  智能战略判断系统
-# ══════════════════════════════════════════════
-def evaluate_investment_strategy(pe_percent, period, amount):
-    plan_text = f"【{period} {amount}元】"
-    half_amount = max(10, int(amount / 2))
-    double_amount = int(amount * 1.5)
-    
-    if pe_percent >= 75.0:
-        level, status = "high", "估值显著偏高 · 风险聚集区"
-        strategy = f"🚨 当前最新抓取的估值百分位（{pe_percent:.2f}%）已突破高危防线。建议收缩防线，将当前的扣款调低至【{half_amount}元】，或分批落实止盈，保留现金火种。"
-    elif pe_percent <= 35.0:
-        level, status = "low", "深度低估 · 黄金击球区"
-        strategy = f"💎 最新追踪估值百分位（{pe_percent:.2f}%）进入深度低估区！安全边际高，属于绝对战略级加仓点，请坚定执行原有 {plan_text}，或考虑主动升级为加码额度【{period} {double_amount}元】。"
-    else:
-        level, status = "mid", "中性均衡 · 动态蓄力区"
-        strategy = f"⚖️ 实时检测估值百分位（{pe_percent:.2f}%）处于中性均衡水位。上有压力下有支撑，建议【严格不折不扣地执行常规既定计划 {plan_text}】，不盲目恐慌，不频繁折腾。"
-        
-    return level, status, strategy
-
-# ══════════════════════════════════════════════
-#  数据搬家对齐流
-# ══════════════════════════════════════════════
 def move_ants_front_latest(fund_code):
     local_data = load_local_history(fund_code)
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
     timestamp = int(time.time() * 1000)
     url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex=1&pageSize=40&_={timestamp}"
     try:
-        import requests as req_lib
-        resp = req_lib.get(url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=headers, timeout=15)
         raw_list = json.loads(resp.text)["Data"]["LSJZList"]
     except: return local_data, 0
     if not raw_list: return local_data, 0
@@ -381,8 +339,7 @@ def move_ants_deep_history_v2(fund_code, max_pages=2):
         timestamp = int(time.time() * 1000)
         url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={current_page}&pageSize=40&_={timestamp}"
         try:
-            import requests as req_lib
-            resp = req_lib.get(url, headers=headers, timeout=15)
+            resp = requests.get(url, headers=headers, timeout=15)
             raw_list = json.loads(resp.text)["Data"]["LSJZList"]
         except: break
         if not raw_list: break
@@ -409,6 +366,26 @@ def move_ants_deep_history_v2(fund_code, max_pages=2):
     return local_data, total_new_inserted, f"穿透扫描 {pages_searched} 页"
 
 # ══════════════════════════════════════════════
+#  智能战略判断系统
+# ══════════════════════════════════════════════
+def evaluate_investment_strategy(pe_percent, period, amount):
+    plan_text = f"【{period} {amount}元】"
+    half_amount = max(10, int(amount / 2))
+    double_amount = int(amount * 1.5)
+    
+    if pe_percent >= 75.0:
+        level, status = "high", "估值显著偏高 · 风险聚集区"
+        strategy = f"🚨 当前最新抓取的估值百分位（{pe_percent:.2f}%）已突破高危防线。建议收缩防线，将当前的扣款调低至【{half_amount}元】，或分批落实止盈，保留现金火种。"
+    elif pe_percent <= 35.0:
+        level, status = "low", "深度低估 · 黄金击球区"
+        strategy = f"💎 最新追踪估值百分位（{pe_percent:.2f}%）进入深度低估区！安全边际高，属于绝对战略级加仓点，请坚定执行原有 {plan_text}，或考虑主动升级为加码额度【{period} {double_amount}元】。"
+    else:
+        level, status = "mid", "中性均衡 · 动态蓄力区"
+        strategy = f"⚖️ 实时检测估值百分位（{pe_percent:.2f}%）处于中性均衡水位。上有压力下有支撑，建议【严格不折不扣地执行常规既定计划 {plan_text}】，不盲目恐慌，不频繁折腾。"
+        
+    return level, status, strategy
+
+# ══════════════════════════════════════════════
 #  头部概览
 # ══════════════════════════════════════════════
 total_monthly = sum((i['amount'] * 21 if i['period'] == '每天' else i['amount'] * 4.3 if '周' in i['period'] else i['amount']) for i in st.session_state.fund_config.values())
@@ -417,7 +394,7 @@ st.markdown(f"""
     <h1>📊 定投监控看板</h1>
     <div class="subtitle">
         {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元<br>
-        ⚙️ 已启用全网估值（PE/百分位/股息率）智能网络爬取对齐模块
+        ⚙️ 智能化网络对齐与混合文本导入控制台（Sheet一体版）
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -460,32 +437,20 @@ for code, info in st.session_state.fund_config.items():
     """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 2  控制台
+#  § 2  控制台（二合一 Sheet 工作面板）
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-st.markdown('<div class="section-label">数据仓储与策略管理控制台</div>', unsafe_allow_html=True)
-
-edit_code = st.selectbox("当前操作项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}")
-current_info = st.session_state.fund_config[edit_code]
-op_mode = st.radio("系统功能切换", ["🔄 智能搬家与估值爬取", "📝 修改基本计划", "📋 批量导入净值", "➕ 增删项目"], horizontal=True)
+st.markdown('<div class="section-label">数据仓储与综合策略集中控制工作台</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
-if op_mode == "🔄 智能搬家与估值爬取":
-    st.markdown("**🌐 基金净值深挖 + 估值要素全网同步引擎**")
-    st.caption("启动后系统将：1. 无条件提取最新净值；2. 深度穿透历史断层；3. 联网实时刷新最新PE、百分位及股息率。")
-
-    if 'migration_log' in st.session_state and st.session_state.migration_log:
-        total_new = st.session_state.migration_log.get('total_new', 0)
-        st.success(f"🎉 成功捕捉并合并了 {total_new} 条净值流水，全线核心估值指标已强齐对齐刷新！")
-        for l in st.session_state.migration_log.get('lines', []): st.markdown(l)
-        if st.button("🗑️ 清空运行日志"):
-            st.session_state.migration_log = {}
-            st.rerun()
-        st.markdown("---")
-
-    max_pages = st.slider("向下开凿并合并新历史的深度（页数）", 1, 10, 2)
-    if st.button("🚀 启动全员双向穿透与估值网络同步", type="primary"):
+# 顶部全局资产同步按钮
+c_sync1, c_sync2 = st.columns([2, 1])
+with c_sync1:
+    max_pages = st.slider("向下开凿净值历史深度（页数）", 1, 10, 2)
+with c_sync2:
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    if st.button("🚀 联网同步全员最新数据", type="primary", use_container_width=True):
         all_codes = list(st.session_state.fund_config.keys())
         bar = st.progress(0)
         live_status = st.empty()
@@ -494,62 +459,58 @@ if op_mode == "🔄 智能搬家与估值爬取":
 
         for idx, code in enumerate(all_codes):
             fname = st.session_state.fund_config[code]['name']
+            live_status.info(f"⏳ 正在抓取并同步 [{code}] {fname}...")
             
-            # 1. 抓取净值历史
-            live_status.info(f"⏳ 正在同步 [{code}] {fname} 历史与最新净值...")
+            # 1. 抓取最新净值历史
             local_db, new_front_count = move_ants_front_latest(code)
-            _, new_deep_count, debug_info = move_ants_deep_history_v2(fund_code=code, max_pages=max_pages)
-            this_fund_total = new_front_count + new_deep_count
-            total_new += this_fund_total
+            _, new_deep_count, _ = move_ants_deep_history_v2(fund_code=code, max_pages=max_pages)
+            total_new += (new_front_count + new_deep_count)
             
-            # 2. 爬取最新线上核心估值要素
-            live_status.info(f"🌐 正在抓取 [{code}] 对应的最新全网估值(PE/百分位/股息率)...")
+            # 2. 爬取最新核心估值要素
             val_data = fetch_latest_valuation_online(code)
-            
-            val_status = "未探测到估值变化"
             if val_data:
                 pe, pct, div = val_data
-                st.session_state.fund_config[code].update({
-                    'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div
-                })
-                val_status = f"✅ 已更新(PE:{pe:.2f}, 百分位:{pct:.1f}%, 股息:{div})"
+                st.session_state.fund_config[code].update({'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div})
             
             bar.progress((idx + 1) / len(all_codes))
-            log_lines.append(f"**[{code}]** {val_status} | 净值补缺:+{this_fund_total}条 (存量:{len(load_local_history(code))}条)")
-
-        # 批量存入配置文件
+            
         save_config(st.session_state.fund_config)
         live_status.empty()
         bar.empty()
-        st.session_state.migration_log = {'total_new': total_new, 'lines': log_lines}
+        st.success(f"🎉 联网更新完成！补齐了 {total_new} 条历史净值流水，各大资产卡片估值指标均已强齐刷新！")
         st.rerun()
 
-elif op_mode == "📝 修改基本计划":
-    with st.form("edit_form"):
-        st.markdown(f"**📝 修改 [{edit_code}] 的核心定投计划参数**")
-        c1, c2 = st.columns(2)
-        with c1: new_period = st.text_input("定投周期", value=current_info['period'])
-        with c2: new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
-        st.caption("注：PE/百分位/股息率属于自动抓取字段，如遇网络故障或极其特殊产品，可在下方人工辅助兜底干预。")
-        c3, c4 = st.columns(2)
-        with c3: fallback_pe = st.number_input("兜底 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
-        with c4: fallback_pct = st.number_input("兜底 PE 百分位（%）", value=float(current_info['pe_percent']), step=0.01, format="%.2f")
-        fallback_div = st.text_input("兜底 股息率", value=current_info['div_yield'])
-        
-        if st.form_submit_button("💾 保存配置更改"):
-            st.session_state.fund_config[edit_code].update({
-                'period': new_period, 'amount': new_amount, 'pe_ttm': fallback_pe, 'pe_percent': fallback_pct, 'div_yield': fallback_div
-            })
-            save_config(st.session_state.fund_config)
-            st.success("✅ 周期与扣款计划修改成功！")
-            st.rerun()
+st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-elif op_mode == "📋 批量导入净值":
-    st.markdown(f"**混贴文本清洗流**（不含6位代码的数据默认写入：**{current_info['name']}**）")
-    raw_text = st.text_area("在此粘贴网页或Excel中复制的数据流水")
-    if st.button("⚡ 自动解析注入", type="primary"):
-        if not raw_text.strip(): st.error("⚠️ 输入为空")
-        else:
+# 项目基本计划表单（微调）与批量文本导入混合 Sheet
+edit_code = st.selectbox("当前操作项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}")
+current_info = st.session_state.fund_config[edit_code]
+
+with st.form("sheet_integrated_form"):
+    st.markdown(f"**📝 修改定投计划 (如有需要可在下方干预兜底指标)**")
+    c1, c2 = st.columns(2)
+    with c1: new_period = st.text_input("定投周期", value=current_info['period'])
+    with c2: new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
+    
+    c3, c4 = st.columns(2)
+    with c3: fallback_pe = st.number_input("兜底 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
+    with c4: fallback_pct = st.number_input("兜底 PE 百分位（%）", value=float(current_info['pe_percent']), step=0.01, format="%.2f")
+    fallback_div = st.text_input("兜底 股息率", value=current_info['div_yield'])
+    
+    st.markdown("---")
+    st.markdown(f"**📋 混贴文本清洗流**（不含6位代码的数据默认写入当前选中的：**{current_info['name']}**）")
+    raw_text = st.text_area("在此粘贴网页或Excel中复制的数据流水（将与上面修改的内容一并提交）", height=120)
+    
+    if st.form_submit_button("💾 确认并保存当前 Sheet 的所有更改", type="secondary", use_container_width=True):
+        # 1. 保存配置参数和兜底指标
+        st.session_state.fund_config[edit_code].update({
+            'period': new_period, 'amount': new_amount, 'pe_ttm': fallback_pe, 'pe_percent': fallback_pct, 'div_yield': fallback_div
+        })
+        save_config(st.session_state.fund_config)
+        
+        # 2. 如果存在混贴文本，执行自动注入合并
+        text_msg = ""
+        if raw_text.strip():
             lines = raw_text.split('\n')
             memory_db = {c: load_local_history(c) for c in st.session_state.fund_config}
             import_details = {c: 0 for c in st.session_state.fund_config}
@@ -582,14 +543,18 @@ elif op_mode == "📋 批量导入净值":
                     save_local_history(c, memory_db[c])
                     total += cnt
             if total > 0:
-                st.success("🎉 数据分流落盘成功！")
-                st.rerun()
-            else: st.error("❌ 未发现合法日期净值结构")
+                text_msg = f" 并且成功清洗导入了 {total} 条本地流水账目数据！"
+            else:
+                text_msg = " （未发现合法的混贴净值日期结构）"
+                
+        st.success(f"✅ 基本配置保存成功！{text_msg}")
+        st.rerun()
 
-else:
+st.markdown("<br>", unsafe_allow_html=True)
+with st.expander("➕ / 🗑️ 卡片增删维护区"):
     c_add, c_del = st.columns(2)
     with c_add:
-        st.markdown("##### ➕ 新增项目")
+        st.markdown("##### ➕ 新增资产")
         with st.form("add_form"):
             add_code = st.text_input("基金代码", max_chars=6)
             add_name = st.text_input("基金简称")
@@ -604,13 +569,12 @@ else:
                         'pe_ttm': 15.0, 'pe_percent': 50.0, 'div_yield': '2.00%'
                     }
                     save_config(st.session_state.fund_config)
-                    st.success(f"✅ [{add_code}] 空白资产项目卡片已生成，请执行智能同步获取实时估值！")
+                    st.success(f"✅ [{add_code}] 已建立，请点击上方按钮一键联网对齐数据！")
                     st.rerun()
-
     with c_del:
-        st.markdown("##### 🗑️ 移除项目")
+        st.markdown("##### 🗑️ 移除资产")
         del_target = st.selectbox("选择移除目标", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}] {st.session_state.fund_config[x]['name']}")
-        confirm = st.checkbox("我确认清除该基金本地全部历史数据流水且不可逆")
+        confirm = st.checkbox("我确认清除本地全部流水且不可逆")
         if st.button("擦除项目", disabled=not confirm):
             del st.session_state.fund_config[del_target]
             save_config(st.session_state.fund_config)
@@ -683,4 +647,4 @@ if current_db:
         df_d['净值增长率'] = df_d['净值增长率'].map(lambda x: f"{x:+.2f}%")
         st.dataframe(df_d[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.markdown('<div class="strategy-box info">💡 本地数据空白，请执行智能搬家同步。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="strategy-box info">💡 本地数据空白，请点击控制台上的“联网同步”或使用“混贴导入”。</div>', unsafe_allow_html=True)
