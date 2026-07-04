@@ -3,21 +3,48 @@ import pandas as pd
 import urllib.request
 import json
 import os
-import plotly.express as px  # ⚙️ 引入专业的交互式图表库
 
 # 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
 
-# --- 手机端纯净体验 CSS 注入 ---
+# --- 手机端防乱码、防重叠、支持自动换行纯净 CSS ---
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;} 
     footer {visibility: hidden;}
     header {background-color: transparent !important;}
-    .stMarkdown div p { word-break: break-all !important; white-space: pre-wrap !important; }
-    .fund-card { background-color: #1E232A; border-radius: 12px; padding: 16px; margin-bottom: 1px; border: 1px solid #3A3F47; }
-    .fund-title { font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 8px; border-bottom: 1px solid #3A3F47; padding-bottom: 6px; }
-    .fund-tag { background-color: #2A2F35; color: #A1C4FD; padding: 2px 8px; border-radius: 4px; font-size: 12px; display: inline-block; margin-bottom: 5px; }
+    
+    /* 核心文本容器：支持手机端完美自动换行 */
+    .stMarkdown div p {
+        word-break: break-all !important;
+        white-space: pre-wrap !important;
+    }
+    
+    /* 仿手机原生 App 卡片设计 */
+    .fund-card {
+        background-color: #1E232A;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 1px;
+        border: 1px solid #3A3F47;
+    }
+    .fund-title {
+        font-size: 16px;
+        font-weight: bold;
+        color: #FFFFFF;
+        margin-bottom: 8px;
+        border-bottom: 1px solid #3A3F47;
+        padding-bottom: 6px;
+    }
+    .fund-tag {
+        background-color: #2A2F35;
+        color: #A1C4FD;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        display: inline-block;
+        margin-bottom: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -102,82 +129,57 @@ for code, info in st.session_state.fund_config.items():
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
-# --- 2. 综合控制台 ---
-with st.expander("⚙️ 点击展开：智能基金配置与数据搬运控制台"):
-    st.markdown("### 1️⃣ 修改并永久保存定投计划")
-    edit_code = st.selectbox("选择要修改或搬运数据的基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
-    current_info = st.session_state.fund_config[edit_code]
+# --- 2. 纯原生管理面板（防小图标乱码） ---
+st.subheader("🛠️ 智能基金配置与数据搬运控制台")
+edit_code = st.selectbox("选择要修改或搬运数据的基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+current_info = st.session_state.fund_config[edit_code]
+
+# 修改计划表单
+with st.form("edit_plan_form"):
+    st.markdown("**1️⃣ 修改并永久保存定投计划**")
     col_p, col_a = st.columns(2)
-    with col_p: new_period = st.text_input("修改定投周期：", value=current_info['period'], key=f"p_{edit_code}")
-    with col_a: new_amount = st.number_input("修改定投金额 (元)：", value=int(current_info['amount']), step=10, key=f"a_{edit_code}")
-    if st.button("💾 确认更新并永久保存计划"):
+    with col_p: new_period = st.text_input("定投周期：", value=current_info['period'])
+    with col_a: new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10)
+    submit_plan = st.form_submit_with_button_label("💾 确认更新并永久保存计划")
+    if submit_plan:
         st.session_state.fund_config[edit_code]['period'] = new_period
         st.session_state.fund_config[edit_code]['amount'] = new_amount
         save_config(st.session_state.fund_config)
         st.success("🎉 配置已固化到云端！正在自动刷新看板...")
         st.rerun()
-        
-    st.markdown("---")
-    st.markdown("### 2️⃣ 蚂蚁搬家数据流管理")
-    col_btn1, col_btn2, _ = st.columns([2, 2, 4])
-    current_db = load_local_history(edit_code)
-    with col_btn1:
-        if st.button("🔄 蚂蚁搬家：顺路下载最新40天数据", key="btn_ants"):
-            current_db, msg = move_ants_history(edit_code, page_index=1)
-            st.toast(msg)
-            st.rerun()
-    with col_btn2:
-        target_page = st.number_input("搬运更深历史(页码)", min_value=1, max_value=100, value=2, step=1, key="num_page")
-        if st.button("⛏️ 深度挖掘旧历史", key="btn_dig"):
-            current_db, msg = move_ants_history(edit_code, page_index=target_page)
-            st.toast(msg)
-            st.rerun()
 
-# --- 3. 多维增量穿透大盘 + 🎬 高交互移动端折线图 ---
-st.markdown("<br>", unsafe_allow_html=True)
+# 蚂蚁搬家管理
+st.markdown("**2️⃣ 蚂蚁搬家数据流管理**")
+col_btn1, col_btn2, _ = st.columns([2, 2, 4])
+current_db = load_local_history(edit_code)
+
+with col_btn1:
+    if st.button("🔄 蚂蚁搬家：顺路下载最新40天数据", key="btn_ants"):
+        current_db, msg = move_ants_history(edit_code, page_index=1)
+        st.toast(msg)
+        st.rerun()
+with col_btn2:
+    target_page = st.number_input("搬运更深历史(页码)", min_value=1, max_value=100, value=2, step=1, key="num_page")
+    if st.button("⛏️ 深度挖掘旧历史", key="btn_dig"):
+        current_db, msg = move_ants_history(edit_code, page_index=target_page)
+        st.toast(msg)
+        st.rerun()
+
+# --- 3. 多维增量穿透大盘 + 原生交互折线图 ---
+st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
 if current_db:
     df_raw = pd.DataFrame(current_db)
     df_raw['日期'] = pd.to_datetime(df_raw['日期'])
-    # 按日期正序排列（图表从左往右延伸必须是正序）
-    df_chart = df_raw.sort_values(by='日期', ascending=True)
+    
+    # 📈 --- 纯原生轻量级交互折线图（自带手机端单指滑动悬浮窗、双指捏合缩放） ---
+    st.markdown("**📉 历史趋势全动态走势图（单指滑动可查看精准日期与净值）**")
+    df_chart = df_raw.set_index('日期').sort_index()[['单位净值']]
+    st.line_chart(df_chart, x_label="交易日期", y_label="基金单位净值")
     
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
-    
-    # 📈 --- 【新增】Plotly 全动态手势缩放折线图模块 ---
-    st.markdown("**📉 历史趋势全动态走势图（支持手机端双指捏合缩放、拖拽）**")
-    
-    fig = px.line(
-        df_chart, 
-        x='日期', 
-        y='单位净值',
-        title=f"{st.session_state.fund_config[edit_code]['name']} 历史净值走势",
-        labels={'单位净值': '基金单位净值', '日期': '交易日期'}
-    )
-    
-    # 深度定制手机端专属滑屏交互样式
-    fig.update_traces(
-        line=dict(color='#A1C4FD', width=2),
-        hovertemplate="<b>日期:</b> %{x|%Y-%m-%d}<br><b>单位净值:</b> %{y:.4f}<extra></extra>" # 点击或悬浮时精确显示当天数据
-    )
-    
-    fig.update_layout(
-        hovermode="x unified",  # 移动端十字光标绑定X轴，滑动极其丝滑
-        dragmode="zoom",        # 默认鼠标或手指拖拽动作为“矩形局部放大”
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="#E0E0E0"),
-        xaxis=dict(showgrid=True, gridcolor='#2A2F35', tickformat='%Y-%m-%d'),
-        yaxis=dict(showgrid=True, gridcolor='#2A2F35'),
-        margin=dict(l=10, r=10, t=40, b=10)
-    )
-    
-    # 渲染图表（启用响应式并隐藏非必要工具栏，使手机端操作更聚焦）
-    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
-    st.caption("💡 手机端操作小贴士：双指张开/捏合即可放大缩小；单指按住顶部工具栏的四向箭头按钮可自由拖拽平移。")
-    st.markdown("<br>", unsafe_allow_html=True)
     
     # 三选项卡数据面板
     t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
@@ -200,4 +202,4 @@ if current_db:
         df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.info("💡 当前该基金本地总库为空。请展开上方的控制台并点击【蚂蚁搬家】按钮，开始建立历史数据库！")
+    st.info("💡 当前该基金本地总库为空。请在上方控制台点击【蚂蚁搬家】按钮，开始建立历史数据库！")
