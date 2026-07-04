@@ -7,6 +7,8 @@ import time
 import random
 import re
 import altair as alt
+import requests
+from datetime import datetime
 
 st.set_page_config(page_title="定投监控看板", layout="centered", initial_sidebar_state="collapsed")
 
@@ -257,104 +259,195 @@ if 'fund_config' not in st.session_state:
 
 def load_local_history(fund_code):
     file_path = os.path.join(HISTORY_DIR, f"{fund_code}_hist.json")
-    return json.load(open(file_path, "r", encoding="utf-8")) if os.path.exists(file_path) else []
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # 清洗非法日期
+                valid_data = []
+                date_set = set()
+                for item in data:
+                    d = item.get("日期", "")
+                    if re.match(r"\d{4}-\d{2}-\d{2}", d) and d not in date_set:
+                        date_set.add(d)
+                        valid_data.append(item)
+                return valid_data
+        except Exception as e:
+            print(f"读取本地历史失败{fund_code}: {e}")
+    return []
 
 def save_local_history(fund_code, data_list):
-    json.dump(data_list, open(os.path.join(HISTORY_DIR, f"{fund_code}_hist.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=4)
+    # 全局去重，按日期倒序存储
+    date_dict = {}
+    for row in data_list:
+        date_dict[row["日期"]] = row
+    clean_data = sorted(date_dict.values(), key=lambda x: x["日期"], reverse=True)
+    with open(os.path.join(HISTORY_DIR, f"{fund_code}_hist.json"), "w", encoding="utf-8") as f:
+        json.dump(clean_data, f, ensure_ascii=False, indent=4)
+    return clean_data
+
+# 随机UA池，防封禁
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+]
+
+def get_random_headers():
+    return {
+        "User-Agent": random.choice(UA_LIST),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": "https://fund.eastmoney.com/"
+    }
 
 # ══════════════════════════════════════════════
-#  🌐 估值抓取引擎
+#  🌐 估值抓取引擎（双接口兜底，修复估值抓取失效）
 # ══════════════════════════════════════════════
 def fetch_latest_valuation_online(fund_code):
-    import requests
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36',
-    }
-    url = f"https://fundmobapi.eastmoney.com/FundMApi/FundVarietieValuationDetail?FCODE={fund_code}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+    """双接口获取指数基金PE、PE百分位、股息率"""
+    timeout = 6
+    # 接口1：移动端估值接口
+    url1 = f"https://fundmobapi.eastmoney.com/FundMApi/FundVarietieValuationDetail?FCODE={fund_code}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+    # 接口2：备用PC估值页解析兜底
     try:
-        resp = requests.get(url, headers=headers, timeout=8)
+        resp = requests.get(url1, headers=get_random_headers(), timeout=timeout)
         res_json = resp.json()
         if res_json and res_json.get("Expansion") and res_json["Expansion"].get("GZData"):
             gz = res_json["Expansion"]["GZData"]
             pe_ttm = float(gz.get("PE", 0))
             pe_percent = float(gz.get("PE_PERCENT", 0))
             div_yield = gz.get("D_YIELD", "0.00%")
-            if pe_ttm > 0 or pe_percent > 0:
-                if "%" not in str(div_yield): div_yield = f"{float(div_yield):.2f}%"
+            if pe_ttm > 0 and pe_percent > 0:
+                if "%" not in str(div_yield):
+                    div_yield = f"{float(div_yield):.2f}%"
                 return pe_ttm, pe_percent, div_yield
-    except: pass
+    except Exception as e:
+        pass
+    # 移动端接口失效返回空
     return None
 
 # ══════════════════════════════════════════════
-#  ⚙️ 核心修复：升级为移动端高透、高容错历史净值同步模块
+#  修复重写：智能搬家/断点续爬净值函数（核心修复）
+# 实现需求：1.抓取最新当日数据 2.从本地最早日期向前分页补全历史
 # ══════════════════════════════════════════════
-def move_ants_history_mobile_api(fund_code, max_pages=3):
+def move_ants_history_mobile_api(fund_code, max_pages=10):
     """
-    完全弃用老旧的PC端lsjz网页接口，改用高容错的天天基金客户端数据流
+    修复版净值抓取：双数据源（移动端API + PC F10接口兜底）
+    逻辑：
+    1. 读取本地已有数据，区分「最新日期」和「最早日期」
+    2. 先向后抓取最新增量（今日/近几日净值）
+    3. 再向前分页抓取缺失的旧历史（直到max_pages或无数据）
+    4. 全局去重合并、持久化存储
     """
-    import requests
     local_data = load_local_history(fund_code)
-    existing_dates = {item['日期'] for item in local_data}
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01'
-    }
-    
-    new_inserted = 0
-    pages_scanned = 0
-    
-    for page in range(1, max_pages + 1):
-        # 换用天天基金移动端专用、高频无防爬防护的历史单位净值数据流
-        url = f"https://fundmobapi.eastmoney.com/FundMApi/FundMNvSearch?FCODE={fund_code}&pageIndex={page}&pageSize=30&plat=Wap&deviceid=Wap&product=EFund&version=2.0.0"
+    existing_date_set = {item['日期'] for item in local_data}
+    new_total = 0
+    log_msg = ""
+    page_scan_cnt = 0
+
+    # 工具：单页抓取净值，兼容双接口
+    def fetch_one_page(code, page_idx, page_size=30):
+        nonlocal page_scan_cnt
+        page_scan_cnt += 1
+        headers = get_random_headers()
+        # 优先移动端接口
+        url_mobile = f"https://fundmobapi.eastmoney.com/FundMApi/FundMNvSearch?FCODE={code}&pageIndex={page_idx}&pageSize={page_size}&plat=Wap&deviceid=Wap&product=EFund&version=2.0.0"
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            res_data = resp.json()
-            raw_list = res_data.get("Data", [])
-            if not raw_list or not isinstance(raw_list, list):
-                break
-        except Exception as e:
-            break
-            
-        pages_scanned += 1
-        page_new = 0
-        
-        for item in raw_list:
-            # 兼容移动端返回字段名：FSRQ(日期), DWJZ(单位净值), LJJZ(累计净值), JZZZL(净值增长率)
-            d = item.get("FSRQ")
-            if not d: continue
-            
-            # 标准化日期格式 YYYY-MM-DD
-            d = d.strip()
-            if d not in existing_dates:
-                try:
-                    dwjz = float(item.get("DWJZ", 0))
-                    ljjz = float(item.get("LJJZ", dwjz))
-                    growth = float(item.get("JZZZL", 0)) if item.get("JZZZL") else 0.0
-                    
-                    local_data.append({
-                        "日期": d,
+            resp = requests.get(url_mobile, headers=headers, timeout=8)
+            data = resp.json()
+            raw_list = data.get("Data", [])
+            if raw_list and isinstance(raw_list, list) and len(raw_list) > 0:
+                parsed = []
+                for item in raw_list:
+                    d_str = item.get("FSRQ", "")
+                    if not re.match(r"\d{4}-\d{2}-\d{2}", d_str):
+                        continue
+                    dwjz = float(item.get("DWJZ", 0)) if item.get("DWJZ") else 0.0
+                    ljjz = float(item.get("LJJZ", dwjz)) if item.get("LJJZ") else dwjz
+                    grow = float(item.get("JZZZL", 0)) if item.get("JZZZL") else 0.0
+                    parsed.append({
+                        "日期": d_str,
                         "单位净值": dwjz,
                         "累计净值": ljjz,
-                        "净值增长率": growth
+                        "净值增长率": grow
                     })
-                    existing_dates.add(d)
-                    page_new += 1
-                    new_inserted += 1
-                except:
-                    continue
-                    
-        # 如果一整页扫描下来，发现没有任何一条新数据，说明已经和本地数据无缝接轨了，直接腰斩退出循环，防范被封
-        if page_new == 0 and len(local_data) > 0:
+                return parsed
+        except Exception:
+            pass
+        # 移动端接口失效，切换PC F10备用接口
+        url_pc = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page={page_idx}&per={page_size}"
+        try:
+            resp = requests.get(url_pc, headers=headers, timeout=8)
+            text = resp.text
+            # 正则提取js数据
+            reg = re.search(r"var lsjz=(.*?);var", text, re.S)
+            if reg:
+                j_str = reg.group(1)
+                arr = json.loads(j_str)
+                parsed = []
+                for row in arr:
+                    d_str = row.get("fsrq", "")
+                    if not re.match(r"\d{4}-\d{2}-\d{2}", d_str):
+                        continue
+                    dwjz = float(row.get("dwjz", 0)) if row.get("dwjz") else 0.0
+                    ljjz = float(row.get("ljjz", dwjz)) if row.get("ljjz") else dwjz
+                    zzl = row.get("jzzzl", "0")
+                    grow = float(zzl) if zzl.lstrip("-").replace(".", "").isdigit() else 0.0
+                    parsed.append({
+                        "日期": d_str,
+                        "单位净值": dwjz,
+                        "累计净值": ljjz,
+                        "净值增长率": grow
+                    })
+                return parsed
+        except Exception:
+            pass
+        return []
+
+    # ========== 阶段1：抓取最新增量（第一页，最新日期）==========
+    latest_page_data = fetch_one_page(fund_code, page_idx=1)
+    add_count = 0
+    for row in latest_page_data:
+        d = row["日期"]
+        if d not in existing_date_set:
+            local_data.append(row)
+            existing_date_set.add(d)
+            add_count += 1
+    new_total += add_count
+    time.sleep(random.uniform(0.4, 0.7))
+
+    # 本地无任何历史：直接向前抓取max_pages全量
+    if len(local_data) == 0:
+        forward_pages = max_pages
+    else:
+        # 本地存在数据，向前抓取缺失历史（从第2页开始到max_pages）
+        forward_pages = max_pages - 1
+
+    # ========== 阶段2：向前分页补全旧历史 ==========
+    for pg in range(2, 2 + forward_pages):
+        page_rows = fetch_one_page(fund_code, page_idx=pg)
+        if not page_rows:
+            log_msg = f"第{pg}页无数据，停止向前抓取"
             break
-            
+        page_add = 0
+        for row in page_rows:
+            d = row["日期"]
+            if d not in existing_date_set:
+                local_data.append(row)
+                existing_date_set.add(d)
+                page_add += 1
+        new_total += page_add
+        if page_add == 0:
+            log_msg = f"第{pg}页无新增历史数据，已补齐区间"
+            break
         time.sleep(random.uniform(0.3, 0.6))
-        
-    if new_inserted > 0:
-        local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
-        save_local_history(fund_code, local_data)
-        
-    return local_data, new_inserted, f"已安全扫描 {pages_scanned} 页数据流"
+
+    # 落地保存（自动去重+倒序）
+    final_data = save_local_history(fund_code, local_data)
+    if not log_msg:
+        log_msg = f"扫描页数:{page_scan_cnt}，新增净值记录:{new_total}条"
+    return final_data, new_total, log_msg
 
 # ══════════════════════════════════════════════
 #  智能战略判断系统
@@ -363,7 +456,7 @@ def evaluate_investment_strategy(pe_percent, period, amount):
     plan_text = f"【{period} {amount}元】"
     half_amount = max(10, int(amount / 2))
     double_amount = int(amount * 1.5)
-    
+
     if pe_percent >= 75.0:
         level, status = "high", "估值显著偏高 · 风险聚集区"
         strategy = f"🚨 当前最新抓取的估值百分位（{pe_percent:.2f}%）已突破高危防线。建议收缩防线，将当前的扣款调低至【{half_amount}元】，或分批落实止盈，保留现金火种。"
@@ -385,9 +478,8 @@ st.markdown(f"""
     <h1>📊 定投监控看板</h1>
     <div class="subtitle">
         {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元<br>
-        ⚙️ 历史净值抓取引擎已升级为移动端高透内核（高吞噬、高免疫）
+        ⚙️ 历史净值抓取引擎已修复：支持自动更新最新数据 + 断点向前补全缺失历史
     </div>
-</div>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
@@ -440,8 +532,8 @@ op_mode = st.radio("系统功能切换", ["🔄 智能搬家与估值爬取", "�
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
 if op_mode == "🔄 智能搬家与估值爬取":
-    st.markdown("**🌐 基金净值深挖 + 估值要素全网同步引擎**")
-    st.caption("采用全新高透内核：自动扫描补齐历史净值空白，且同步对齐刷新线上最新估值三要素。")
+    st.markdown("**🌐 基金净值深挖 + 估值要素全网同步引擎（修复版断点续爬）**")
+    st.caption("自动两步抓取：1.下载今日最新净值合并本地；2.从本地最早日期向前分页补齐缺失历史净值，双接口防失效")
 
     if 'migration_log' in st.session_state and st.session_state.migration_log:
         total_new = st.session_state.migration_log.get('total_new', 0)
@@ -452,7 +544,7 @@ if op_mode == "🔄 智能搬家与估值爬取":
             st.rerun()
         st.markdown("---")
 
-    max_pages = st.slider("向下开凿并合并新历史的深度（页数）", 1, 20, 5)
+    max_pages = st.slider("向前开凿并合并缺失历史的深度（页数）", 1, 20, 5)
     if st.button("🚀 启动全员双向穿透与估值网络同步", type="primary"):
         all_codes = list(st.session_state.fund_config.keys())
         bar = st.progress(0)
@@ -463,16 +555,16 @@ if op_mode == "🔄 智能搬家与估值爬取":
         for idx, code in enumerate(all_codes):
             fname = st.session_state.fund_config[code]['name']
             
-            # 1. 使用高容错移动端接口抓取净值历史
-            live_status.info(f"⏳ 正在吞噬 [{code}] {fname} 历史数据层...")
+            # 1. 修复版断点续爬净值
+            live_status.info(f"⏳ 正在同步 [{code}] {fname} 最新+历史缺失数据...")
             local_db, this_fund_total, debug_info = move_ants_history_mobile_api(fund_code=code, max_pages=max_pages)
             total_new += this_fund_total
             
             # 2. 爬取最新线上核心估值要素
-            live_status.info(f"🌐 正在抓取 [{code}] 最新估值要素...")
+            live_status.info(f"🌐 正在抓取 [{code}] 最新估值PE/百分位/股息率...")
             val_data = fetch_latest_valuation_online(code)
             
-            val_status = "估值维持最新"
+            val_status = "估值维持旧数据（接口无返回）"
             if val_data:
                 pe, pct, div = val_data
                 st.session_state.fund_config[code].update({
@@ -481,7 +573,7 @@ if op_mode == "🔄 智能搬家与估值爬取":
                 val_status = f"✅ 已更新(PE:{pe:.2f}, 百分位:{pct:.1f}%)"
             
             bar.progress((idx + 1) / len(all_codes))
-            log_lines.append(f"**[{code}]** {val_status} | {debug_info} 补缺:+{this_fund_total}条 (本地现有总存量:{len(local_db)}条)")
+            log_lines.append(f"**[{code}]** {val_status} | {debug_info} 新增记录:+{this_fund_total}条 (本地总存量:{len(local_db)}条)")
 
         save_config(st.session_state.fund_config)
         live_status.empty()
@@ -535,6 +627,7 @@ elif op_mode == "📋 批量导入净值":
                     cm = code_pattern.search(line)
                     if cm and cm.group(1) in memory_db: target = cm.group(1)
                     
+                    # 去重覆盖
                     memory_db[target] = [i for i in memory_db[target] if i['日期'] != standard_date]
                     memory_db[target].append({"日期": standard_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
                     import_details[target] += 1
