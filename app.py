@@ -524,6 +524,26 @@ if hist_data:
     df['日期'] = pd.to_datetime(df['日期'])
     df.sort_values('日期', inplace=True)  # 确保按日期升序
 
+    # ---- 计算红利再投资前复权 ----
+    # 首先按日期升序，我们已有
+    # 检测除权日：累计净值不变且单位净值下降
+    df['复权因子_raw'] = 1.0
+    for i in range(1, len(df)):
+        prev_nav = df.loc[i-1, '单位净值']
+        curr_nav = df.loc[i, '单位净值']
+        prev_cum = df.loc[i-1, '累计净值']
+        curr_cum = df.loc[i, '累计净值']
+        # 如果累计净值变化很小（视为不变）且单位净值下降，则视为分红除权
+        if abs(curr_cum - prev_cum) < 1e-6 and curr_nav < prev_nav:
+            # 复权因子 *= 前日净值 / 当日净值（即考虑分红再投资）
+            df.loc[i, '复权因子_raw'] = df.loc[i-1, '复权因子_raw'] * (prev_nav / curr_nav)
+        else:
+            df.loc[i, '复权因子_raw'] = df.loc[i-1, '复权因子_raw']
+    # 归一化，使最新复权因子为1
+    last_factor = df.loc[len(df)-1, '复权因子_raw']
+    df['复权因子_norm'] = df['复权因子_raw'] / last_factor
+    df['前复权净值'] = df['单位净值'] * df['复权因子_norm']
+
     # ---- 复权选择 ----
     adj_type = st.selectbox('复权方式', ['不复权', '前复权', '后复权'], index=0, key='adj_type')
 
@@ -533,12 +553,7 @@ if hist_data:
     elif adj_type == '后复权':
         df['净值'] = df['累计净值']
     else:  # 前复权
-        # 计算复权因子 = 累计净值 / 单位净值
-        df['复权因子'] = df['累计净值'] / df['单位净值']
-        # 取最新日期的复权因子作为基准
-        base_factor = df.loc[df['日期'].idxmax(), '复权因子']
-        # 前复权净值 = 单位净值 * (基准复权因子 / 历史复权因子)
-        df['净值'] = df['单位净值'] * (base_factor / df['复权因子'])
+        df['净值'] = df['前复权净值']
 
     # 计算月均、月高（基于净值列）
     df['月份'] = df['日期'].dt.strftime('%Y-%m')
@@ -551,7 +566,6 @@ if hist_data:
     df_f = df[df['日期'] >= df['日期'].max()-pd.Timedelta(days=dmap[tf])] if tf in dmap else df
 
     # ---- 绘制图表 ----
-    # 使用 value_name='value' 避免与现有列名冲突
     melted = df_f.melt('日期', ['净值', '月均', '月高'], '指标', 'value')
     chart = (
         alt.Chart(melted).mark_line(strokeWidth=1.8).encode(
