@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import os
 import re
+import requests
 import altair as alt
 
 st.set_page_config(page_title="定投监控看板", layout="centered", initial_sidebar_state="collapsed")
@@ -12,7 +13,7 @@ st.set_page_config(page_title="定投监控看板", layout="centered", initial_s
 # ══════════════════════════════════════════════
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght=300;400;500;600;700&family=JetBrains+Mono:wght=400;500;600&display=swap');
 
 #MainMenu, footer, header { visibility: hidden; }
 * { box-sizing: border-box; }
@@ -260,6 +261,67 @@ def save_local_history(fund_code, data_list):
     json.dump(data_list, open(os.path.join(HISTORY_DIR, f"{fund_code}_hist.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=4)
 
 # ══════════════════════════════════════════════
+#  🚀 核心功能：全自动网络数据同步引擎
+# ══════════════════════════════════════════════
+def fetch_fund_history_auto(fund_code, pages=3):
+    """
+    通过天天基金公开非加密 API 全自动抓取并解析单只基金的历史净值
+    """
+    url = f"http://fund.eastmoney.com/f10/F10DataApi.aspx"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"http://fundf10.eastmoney.com/jshz_{fund_code}.html"
+    }
+    
+    new_records = []
+    
+    for page in range(1, pages + 1):
+        params = {
+            "type": "lsjz",
+            "code": fund_code,
+            "page": page,
+            "per": 40  # 每页 40 条记录记录，3页可以拉取近半年以上
+        }
+        try:
+            res = requests.get(url, params=params, headers=headers, timeout=10)
+            res.encoding = 'utf-8'
+            html_content = res.text
+            
+            # 使用正则极速抽取表格中的关键字段（日期、单位净值、日增长率）
+            row_pattern = re.compile(r'<tr><td>(\d{4}-\d{2}-\d{2})</td><td class=\'tor bold\'>([0-9.]+)</td>.*?<td class=\'tor bold [a-zA-Z]+\'>([-+0-9.]*)%?</td>', re.DOTALL)
+            matches = row_pattern.findall(html_content)
+            
+            for item in matches:
+                date_str, jz_str, growth_str = item
+                try:
+                    growth_val = float(growth_str) if growth_str.strip() else 0.0
+                except:
+                    growth_val = 0.0
+                    
+                new_records.append({
+                    "日期": date_str,
+                    "单位净值": float(jz_str),
+                    "累计净值": float(jz_str),
+                    "净值增长率": growth_val
+                })
+        except Exception as e:
+            continue
+            
+    if new_records:
+        # 加载本地已有历史，合并去重
+        local_hist = load_local_history(fund_code)
+        combined_db = {item['日期']: item for item in local_hist}
+        
+        # 用新拉取到的数据进行覆盖更新
+        for rec in new_records:
+            combined_db[rec['日期']] = rec
+            
+        final_list = sorted(list(combined_db.values()), key=lambda x: x['日期'], reverse=True)
+        save_local_history(fund_code, final_list)
+        return len(new_records)
+    return 0
+
+# ══════════════════════════════════════════════
 #  智能战略判断系统
 # ══════════════════════════════════════════════
 def evaluate_investment_strategy(pe_percent, period, amount):
@@ -396,7 +458,7 @@ if current_db:
         df_d['净值增长率'] = df_d['净值增长率'].map(lambda x: f"{x:+.2f}%")
         st.dataframe(df_d[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.markdown('<div class="strategy-box info">💡 本地暂无历史账目，请在下方工作台通过“混贴文本”一键清洗并导入。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="strategy-box info">💡 本地暂无历史账目，点击下方控制台的“全自动云同步”按钮一键抓取历史行情。</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
 #  § 3  数据仓储与控制工作台
@@ -405,56 +467,40 @@ st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-label">数据仓储与控制工作台</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
-tab_sync, tab_manage = st.tabs(["📋 混贴文本批量导入流水", "🔧 资产卡片与核心估值维护"])
+tab_auto, tab_manage = st.tabs(["⚡ 基金净值全自动网络更新", "🔧 资产卡片与核心估值维护"])
 
-# ➡️ Tab 1: 混贴文本批量清洗导入面板
-with tab_sync:
-    st.markdown("##### 📥 混贴文本批量导入历史净值流水")
+# ➡️ Tab 1: 真正全自动无感网络抓取（支持单只更新与一键全量更新）
+with tab_auto:
+    st.markdown("##### 🚀 真正的全自动行情同步引擎")
     current_info = st.session_state.fund_config[edit_code]
-    st.caption(f"当前混贴数据默认直接写入穿透目标：**[{edit_code}] {current_info['name']}**")
+    st.caption(f"当前选定目标：**[{edit_code}] {current_info['name']}**")
     
-    with st.form("integrated_sheet_form"):
-        raw_text = st.text_area("在此直接粘贴网页、天天基金历史表格或 Excel 中复制的净值行（会自动匹配日期和净值）", height=180)
-        if st.form_submit_button("⚡ 确认清洗并导入粘贴的历史流水", type="primary", use_container_width=True):
-            if raw_text.strip():
-                lines = raw_text.split('\n')
-                memory_db = {c: load_local_history(c) for c in st.session_state.fund_config}
-                import_details = {c: 0 for c in st.session_state.fund_config}
-                pattern = re.compile(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+([0-9.]+)')
-                code_pattern = re.compile(r'\b(\d{6})\b')
-                
-                for line in lines:
-                    m = pattern.search(line)
-                    if not m: continue
-                    raw_date = m.group(1).replace('/', '-').replace('.', '-')
-                    parts = raw_date.split('-')
-                    standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                    try:
-                        dwjz = float(m.group(2))
-                        gm = re.search(r'([-+]?[0-9.]+)%', line)
-                        growth = float(gm.group(1)) if gm else 0.0
-                        target = edit_code
-                        cm = code_pattern.search(line)
-                        if cm and cm.group(1) in memory_db: target = cm.group(1)
-                        
-                        memory_db[target] = [i for i in memory_db[target] if i['日期'] != standard_date]
-                        memory_db[target].append({"日期": standard_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
-                        import_details[target] += 1
-                    except: continue
-                    
-                total = 0
-                for c, cnt in import_details.items():
-                    if cnt > 0:
-                        memory_db[c] = sorted(memory_db[c], key=lambda x: x['日期'], reverse=True)
-                        save_local_history(c, memory_db[c])
-                        total += cnt
-                if total > 0:
-                    st.success(f"🎉 成功清洗批量导入了 {total} 条本地历史流水线数据！")
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("🔄 仅同步当前选定基金", use_container_width=True, type="primary"):
+            with st.spinner(f"正在全自动同步 [{edit_code}] 历史行情..."):
+                count = fetch_fund_history_auto(edit_code, pages=4) # 默认抓取最近 4 页大约 160 个交易日
+                if count > 0:
+                    st.success(f"🎉 成功全自动拉取并合并了 {count} 条历史净值数据！")
                     st.rerun()
                 else:
-                    st.error("❌ 未在文本框中发现符合规范的日期/净值排布结构")
+                    st.error("❌ 数据同步失败，请检查网络连接或基金代码是否正确。")
+                    
+    with col_btn2:
+        if st.button("🌍 一键全自动同步所有监控基金", use_container_width=True):
+            total_updated = 0
+            with st.spinner("正在全自动同步所有基金资产流水..."):
+                for code in st.session_state.fund_config.keys():
+                    count = fetch_fund_history_auto(code, pages=4)
+                    if count > 0:
+                        total_updated += 1
+            if total_updated > 0:
+                st.success(f"🎉 成功完成全自动同步！共刷新了 {total_updated} 只基金的历史资产线。")
+                st.rerun()
             else:
-                st.warning("⚠️ 粘贴板文本为空")
+                st.error("❌ 未同步到有效数据。")
+
+    st.markdown("<p style='font-size:12px; color:#6E7681; margin-top:10px;'>💡 <b>原理说明</b>：此功能直接调用天天基金公开的历史净值接口。首次运行时，点击右侧的“一键同步所有”，即可立刻初始化全部图表。后面隔几天点击一次，即可做到增量数据无感追加合并。</p>", unsafe_allow_html=True)
 
 # ➡️ Tab 2: 资产卡片及最新核心估值无缝修改维护
 with tab_manage:
