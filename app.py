@@ -3,48 +3,21 @@ import pandas as pd
 import urllib.request
 import json
 import os
+import time
 
 # 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
 
-# --- 手机端防乱码、防重叠、支持自动换行纯净 CSS ---
+# --- 手机端纯净体验 CSS 注入 ---
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;} 
     footer {visibility: hidden;}
     header {background-color: transparent !important;}
-    
-    /* 核心文本容器：支持手机端完美自动换行 */
-    .stMarkdown div p {
-        word-break: break-all !important;
-        white-space: pre-wrap !important;
-    }
-    
-    /* 仿手机原生 App 卡片设计 */
-    .fund-card {
-        background-color: #1E232A;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 1px;
-        border: 1px solid #3A3F47;
-    }
-    .fund-title {
-        font-size: 16px;
-        font-weight: bold;
-        color: #FFFFFF;
-        margin-bottom: 8px;
-        border-bottom: 1px solid #3A3F47;
-        padding-bottom: 6px;
-    }
-    .fund-tag {
-        background-color: #2A2F35;
-        color: #A1C4FD;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-        display: inline-block;
-        margin-bottom: 5px;
-    }
+    .stMarkdown div p { word-break: break-all !important; white-space: pre-wrap !important; }
+    .fund-card { background-color: #1E232A; border-radius: 12px; padding: 16px; margin-bottom: 1px; border: 1px solid #3A3F47; }
+    .fund-title { font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 8px; border-bottom: 1px solid #3A3F47; padding-bottom: 6px; }
+    .fund-tag { background-color: #2A2F35; color: #A1C4FD; padding: 2px 8px; border-radius: 4px; font-size: 12px; display: inline-block; margin-bottom: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,7 +69,7 @@ def move_ants_history(fund_code, page_index=1):
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
         with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
         data = json.loads(html)
-        if data and data.get("Data") is None: return local_data, "今日搬运太频繁，请稍后再试。"
+        if data and data.get("Data") is None: return local_data, "云端接口限流，请稍后再试。"
         raw_list = data["Data"]["LSJZList"]
         new_count = 0
         existing_dates = {item['日期'] for item in local_data}
@@ -111,9 +84,9 @@ def move_ants_history(fund_code, page_index=1):
         if new_count > 0:
             local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
             save_local_history(fund_code, local_data)
-            return local_data, f"🎉 成功搬运储存了 {new_count} 天历史数据！"
-        return local_data, "👌 本页数据已存在，无需重复搬运。"
-    except Exception as e: return local_data, f"搬运遭遇波动 ({str(e)})"
+            return local_data, f"🎉 成功搬运 {new_count} 天数据！"
+        return local_data, "👌 数据已最新，无需更新。"
+    except Exception as e: return local_data, f"波动 ({str(e)})"
 
 
 # --- 1. 全景卡片看板 ---
@@ -131,22 +104,19 @@ for code, info in st.session_state.fund_config.items():
 st.markdown("<hr>", unsafe_allow_html=True)
 
 
-# --- 2. 纯净控制台：使用简洁的单选导航（无任何图标乱码组件） ---
-st.subheader("🛠️ 基金配置与数据搬运控制台")
-edit_code = st.selectbox("🎯 当前选中的核心资产基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+# --- 2. 纯净控制台：集成三大核心功能 ---
+st.subheader("🛠️ 基金综合管理控制台")
+edit_code = st.selectbox("🎯 当前选中的基金（用于数据穿透查看）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
 current_info = st.session_state.fund_config[edit_code]
 
-# 使用简单干净的 radio 替代易乱码的折叠组件
-op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 蚂蚁搬家数据同步"], horizontal=True)
+op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 蚂蚁搬家数据同步", "✨ 快捷添加新基金"], horizontal=True)
 
+# 功能 A：修改计划
 if op_mode == "📝 修改定投计划":
-    # 采用官方规范的表单和标准提交按钮
     with st.form("my_edit_form"):
         col_p, col_a = st.columns(2)
         with col_p: new_period = st.text_input("定投周期：", value=current_info['period'])
         with col_a: new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10)
-        
-        # ⚠️ 修复：改用绝对标准的 Streamlit 表单提交函数
         submit_plan = st.form_submit_button("💾 确认更新并永久保存计划")
         if submit_plan:
             st.session_state.fund_config[edit_code]['period'] = new_period
@@ -155,22 +125,69 @@ if op_mode == "📝 修改定投计划":
             st.success("🎉 配置已成功保存！看盘卡片已同步刷新。")
             st.rerun()
 
-else:
-    st.markdown("**数据搬运工作台**")
-    col_btn1, col_btn2, _ = st.columns([2, 2, 4])
-    current_db = load_local_history(edit_code)
-
+# 功能 B：增量搬运数据流
+elif op_mode == "🔄 蚂蚁搬家数据同步":
+    st.markdown("#### 🚀 一键全员同步机制（省时省力）")
+    if st.button("🔥 触发：一键全员下载最新一页（第1页）数据"):
+        success_funds = []
+        progress_bar = st.progress(0)
+        all_codes = list(st.session_state.fund_config.keys())
+        
+        for idx, code in enumerate(all_codes):
+            _, msg = move_ants_history(code, page_index=1)
+            success_funds.append(f"• **{code}**: {msg}")
+            progress_bar.progress((idx + 1) / len(all_codes))
+            time.sleep(0.2) # 微秒级延迟，确保接口安全
+            
+        st.success("📊 【全员最新数据同步完毕！】各基金同步状态如下：")
+        for res in success_funds:
+            st.markdown(res)
+        st.rerun()
+        
+    st.markdown("---")
+    st.markdown("#### ⛏️ 针对当前选中基金深度挖掘老历史")
+    col_btn1, _ = st.columns([3, 5])
     with col_btn1:
-        if st.button("🔄 蚂蚁搬家：下载最新40天数据", key="btn_ants"):
-            current_db, msg = move_ants_history(edit_code, page_index=1)
-            st.toast(msg)
-            st.rerun()
-    with col_btn2:
         target_page = st.number_input("拓展历史页码", min_value=1, max_value=100, value=2, step=1, key="num_page")
-        if st.button("挖取更早历史", key="btn_dig"):
-            current_db, msg = move_ants_history(edit_code, page_index=target_page)
+        if st.button("挖掘该基金此页老历史", key="btn_dig"):
+            _, msg = move_ants_history(edit_code, page_index=target_page)
             st.toast(msg)
             st.rerun()
+
+# 功能 C：动态添加新基金
+else:
+    with st.form("add_new_fund_form"):
+        st.markdown("**✨ 添加一只核心资产基金到自选池**")
+        add_code = st.text_input("请输入6位基金代码（例如：001630）：", max_chars=6)
+        add_name = st.text_input("请输入基金简称（例如：天弘计算机C）：")
+        add_index = st.text_input("关联跟踪的指数名称（例如：计算机指数）：")
+        
+        st.caption("💡 提示：新基金的估值数据（PE/股息率）会在后续接入实时API后自动更新，此处先初始化基础定投规则。")
+        col_ap1, col_ap2 = st.columns(2)
+        with col_ap1: add_period = st.text_input("设定定投周期：", value="每周二")
+        with col_ap2: add_amount = st.number_input("设定定投金额(元)：", value=100, step=10)
+            
+        submit_add = st.form_submit_button("➕ 确认添加这只基金")
+        if submit_add:
+            if len(add_code) != 6 or not add_name:
+                st.error("⚠️ 请输入正确的6位基金代码和基金简称！")
+            elif add_code in st.session_state.fund_config:
+                st.error("💡 该基金已在你的清单中，无需重复添加。")
+            else:
+                st.session_state.fund_config[add_code] = {
+                    'name': add_name,
+                    'index_name': add_index if add_index else '自定义指数',
+                    'period': add_period,
+                    'amount': add_amount,
+                    'pe_ttm': 20.0, # 初始给个中性占位值
+                    'pe_percent': 50.0,
+                    'div_yield': '1.50%',
+                    'status': '新入库跟踪',
+                    'base_strategy': '🎯 刚刚加入自选池。建议【严格执行常规计划 {plan}】。'
+                }
+                save_config(st.session_state.fund_config)
+                st.success(f"🎉 基金 【{add_code} - {add_name}】 已成功永久添加！")
+                st.rerun()
 
 
 # --- 3. 多维增量穿透大盘 + 原生缩放折线图 ---
@@ -183,7 +200,6 @@ if current_db:
     df_raw = pd.DataFrame(current_db)
     df_raw['日期'] = pd.to_datetime(df_raw['日期'])
     
-    # 📈 --- 官方原生轻量交互图表，支持手机双指缩放和平移，绝不报错 ---
     st.markdown("**📉 历史趋势全动态走势图（单指滑动可查看精准日期与净值）**")
     df_chart = df_raw.set_index('日期').sort_index()[['单位净值']]
     st.line_chart(df_chart, x_label="交易日期", y_label="基金单位净值")
@@ -191,7 +207,6 @@ if current_db:
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
     
-    # 三选项卡数据面板
     t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
     
     with t_year:
@@ -212,4 +227,4 @@ if current_db:
         df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.info("💡 当前该基金本地总库为空。请在上方控制台切换到【🔄 蚂蚁搬家数据同步】并点击搬家按钮，开始建立历史趋势图！")
+    st.info("💡 当前该基金本地总库为空。请在控制台切换到【🔄 蚂蚁搬家数据同步】触发同步，开始建立历史趋势图！")
