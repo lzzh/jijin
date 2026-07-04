@@ -204,46 +204,57 @@ def fetch_index_valuation(secid):
     else:
         result['notes'].append(f'push2 失败: {err}')
 
-    # ── 来源 B：深交所官方估值（SZ指数最权威）────────────
+    # ── 来源 B：深交所官方估值（SZ指数）────────────────
     if market == '0':
-        szse_url = (
-            'https://www.szse.cn/api/report/ShowReport'
-            '?SHOWTYPE=JSON&CATALOGID=1815_zhishu&TABKEY=tab1'
-        )
-        text_sz, err_sz = http_get(szse_url, extra_headers={'Referer': 'https://www.szse.cn/'})
-        if text_sz:
-            try:
-                rows = json.loads(text_sz)
-                # 字段：zqdm=代码 syl1=静态PE syl2=滚动PE sjl=PB jzl=股息率
-                matched = [r for r in rows if str(r.get('zqdm', '')).strip() == code_only]
-                if matched:
-                    r = matched[0]
-                    pe_ttm    = _parse_float(r.get('syl2'))
-                    pe_static = _parse_float(r.get('syl1'))
-                    pb        = _parse_float(r.get('sjl'))
-                    div_raw   = str(r.get('jzl', '')).replace('%', '').strip()
-                    div       = _parse_float(div_raw)
-                    if pe_ttm:
-                        result['pe_ttm'] = pe_ttm
-                    if pe_static and not result['pe_static']:
-                        result['pe_static'] = pe_static
-                    if pb:
-                        result['pb'] = pb
-                    if div:
-                        result['div_yield'] = f'{div:.2f}%'
-                    result['notes'].append(
-                        f'深交所官方 ▶ 指数={r.get("zqjc")}  '
-                        f'滚动PE(TTM)={r.get("syl2")}  '
-                        f'静态PE={r.get("syl1")}  '
-                        f'PB={r.get("sjl")}  '
-                        f'股息率={r.get("jzl")}'
-                    )
-                else:
-                    result['notes'].append(f'深交所 ▶ 未找到代码 {code_only}，共{len(rows)}条记录')
-            except Exception as e:
-                result['notes'].append(f'深交所 ▶ 解析失败: {e} | 原始: {text_sz[:120]}')
-        else:
-            result['notes'].append(f'深交所 ▶ 请求失败: {err_sz}')
+        # 深交所指数估值：尝试多个公开端点
+        szse_urls = [
+            (
+                'https://www.szse.cn/api/report/ShowReport/data'
+                '?SHOWTYPE=JSON&CATALOGID=1815_zhishu&TABKEY=tab1&random=0.1',
+                {'Referer': 'https://www.szse.cn/market/bond/index/index.html'}
+            ),
+            (
+                'https://www.szse.cn/market/product/index/index/index.html',
+                {'Referer': 'https://www.szse.cn/'}
+            ),
+        ]
+        fetched = False
+        for szse_url, extra_h in szse_urls:
+            text_sz, err_sz = http_get(szse_url, extra_headers=extra_h)
+            if text_sz and text_sz.strip().startswith('['):
+                try:
+                    rows = json.loads(text_sz)
+                    matched = [r for r in rows if str(r.get('zqdm', '')).strip() == code_only]
+                    if matched:
+                        r = matched[0]
+                        pe_ttm    = _parse_float(r.get('syl2'))
+                        pe_static = _parse_float(r.get('syl1'))
+                        pb        = _parse_float(r.get('sjl'))
+                        div_raw   = str(r.get('jzl', '')).replace('%', '').strip()
+                        div       = _parse_float(div_raw)
+                        if pe_ttm:    result['pe_ttm']    = pe_ttm
+                        if pe_static and not result['pe_static']:
+                            result['pe_static'] = pe_static
+                        if pb:        result['pb']        = pb
+                        if div:       result['div_yield'] = f'{div:.2f}%'
+                        result['notes'].append(
+                            f'深交所官方 ▶ {r.get("zqjc")}  '
+                            f'滚动PE={r.get("syl2")}  静态PE={r.get("syl1")}  '
+                            f'PB={r.get("sjl")}  股息率={r.get("jzl")}'
+                        )
+                        fetched = True
+                        break
+                    else:
+                        result['notes'].append(f'深交所 ▶ 未找到 {code_only}，共{len(rows)}条')
+                        fetched = True
+                        break
+                except Exception as e:
+                    result['notes'].append(f'深交所 ▶ 解析失败: {e}')
+            else:
+                result['notes'].append(f'深交所 ▶ {szse_url[:50]}… 失败: {err_sz or "非JSON响应"}')
+        if not fetched:
+            # 所有深交所端点均失败，降级用 push2 的 f114 静态PE
+            result['notes'].append('深交所所有接口不可用，PE 仅参考 push2 静态值（f114）')
 
     # ── 来源 C：上交所官方估值（SH指数）────────────────
     elif market == '1':
@@ -759,7 +770,7 @@ with tab_pe:
                 for note in val['notes']:
                     st.code(note, language=None)
 
-            best_pe = val['pe_ttm'] or val['pe_dyn'] or val['pe_static']
+            best_pe = val.get('pe_ttm') or val.get('pe_static')
             c1, c2 = st.columns(2)
             with c1:
                 confirmed_pe = st.number_input(
