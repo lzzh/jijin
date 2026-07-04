@@ -750,10 +750,10 @@ with tab_pe:
                     f'{v if v is not None else "—"}</div></div>',
                     unsafe_allow_html=True
                 )
-            show_val(cols[0], 'PE TTM（推荐用）', val['pe_ttm'], highlight=True)
-            show_val(cols[1], 'PE 动态',          val['pe_dyn'])
-            show_val(cols[2], 'PE 静态',          val['pe_static'])
-            show_val(cols[3], '股息率（自动）',    val['div_yield'])
+            show_val(cols[0], 'PE TTM（推荐）',  val.get('pe_ttm'),    highlight=True)
+            show_val(cols[1], 'PE 静态',          val.get('pe_static'))
+            show_val(cols[2], 'PB 市净率',        val.get('pb'))
+            show_val(cols[3], '股息率',            val.get('div_yield'))
 
             with st.expander('查看原始字段（诊断用）'):
                 for note in val['notes']:
