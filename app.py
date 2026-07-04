@@ -60,13 +60,13 @@ def save_local_history(fund_code, data_list):
     file_path = os.path.join(HISTORY_DIR, f"{fund_code}_hist.json")
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data_list, f, ensure_ascii=False, indent=4)
 
-# ===================== 【重构后的低风控增量抓取函数，完全贴合你的逻辑】 =====================
+# ===================== 【仅此处替换为新版低风控增量抓取函数】 =====================
 def move_ants_history(fund_code, page_index=1):
     local_data = load_local_history(fund_code)
     page_size = 40
     existing_dates = {item['日期'] for item in local_data}
 
-    # 分支1：本地无任何历史，直接抓取当前传入页码，无跳过逻辑
+    # 本地无历史，直接抓取传入页码
     if len(local_data) == 0:
         try:
             url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize={page_size}"
@@ -75,15 +75,19 @@ def move_ants_history(fund_code, page_index=1):
             req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
             with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
             data = json.loads(html)
-            if data and data.get("Data") is None: return local_data, 0, "限流"
+            if data and data.get("Data") is None:
+                return local_data, "今日搬运太频繁，请稍后再试。"
             raw_list = data["Data"]["LSJZList"]
             new_count = 0
             for item in raw_list:
-                if not item.get("FSRQ") or not item.get("DWJZ"): continue
+                if not item.get("FSRQ") or not item.get("DWJZ"):
+                    continue
                 date_str = item["FSRQ"]
                 if date_str not in existing_dates:
-                    try: growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
-                    except: growth = 0.0
+                    try:
+                        growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
+                    except:
+                        growth = 0.0
                     local_data.append({
                         "日期": date_str,
                         "单位净值": float(item["DWJZ"]),
@@ -94,21 +98,19 @@ def move_ants_history(fund_code, page_index=1):
             if new_count > 0:
                 local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
                 save_local_history(fund_code, local_data)
-                return local_data, new_count, "成功"
-            return local_data, 0, "无新数据"
+                return local_data, f"🎉 成功搬运储存了 {new_count} 天历史数据！"
+            return local_data, "👌 本页数据已存在，无需重复搬运。"
         except Exception as e:
-            return local_data, 0, f"波动({str(e)})"
+            return local_data, f"搬运遭遇波动 ({str(e)})"
 
-    # 分支2：本地已有历史，提取本地最早日期，自动跳过重复分页
-    # 排序拿到本地最旧的一条日期
-    sorted_local_asc = sorted(local_data, key=lambda x: x["日期"])
-    local_min_date = sorted_local_asc[0]["日期"]
-
-    # 循环试探分页，找到包含本地最小日期的分界页码
+    # 本地已有数据，获取本地最早日期，试探分页找到分界点，跳过重复页面
+    sorted_asc = sorted(local_data, key=lambda x: x["日期"])
+    local_min_date = sorted_asc[0]["日期"]
     split_page = None
     probe_page = 1
-    max_probe_limit = 20
-    while probe_page <= max_probe_limit:
+    max_probe = 20
+
+    while probe_page <= max_probe:
         try:
             url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={probe_page}&pageSize={page_size}"
             req = urllib.request.Request(url)
@@ -118,9 +120,8 @@ def move_ants_history(fund_code, page_index=1):
             data = json.loads(html)
             if data.get("Data") is None or len(data["Data"]["LSJZList"]) == 0:
                 break
-            page_date_list = [row["FSRQ"] for row in data["Data"]["LSJZList"] if row.get("FSRQ")]
-            # 当前分页包含本地最早日期，找到分界点
-            if local_min_date in page_date_list:
+            page_dates = [row["FSRQ"] for row in data["Data"]["LSJZList"] if row.get("FSRQ")]
+            if local_min_date in page_dates:
                 split_page = probe_page
                 break
             probe_page += 1
@@ -129,14 +130,11 @@ def move_ants_history(fund_code, page_index=1):
             probe_page += 1
             continue
 
-    # 判定本次需要抓取的起始分页：分界页+1，跳过前面全部重复分页
-    if split_page is not None:
-        real_start_page = split_page + 1
-        # 如果传入的page_index < 起始分页，本次直接无数据可抓，跳过请求
-        if page_index < real_start_page:
-            return local_data, 0, f"跳过重复分页{page_index}，本地已包含该页全部数据"
+    # 判断当前请求页码是否在重复区间内，是则直接返回不请求
+    if split_page is not None and page_index <= split_page:
+        return local_data, f"👌 第{page_index}页全部是本地已存储历史，跳过本次请求防限流"
 
-    # 执行目标分页请求，仅抓取缺失数据
+    # 仅抓取缺失分页
     try:
         url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize={page_size}"
         req = urllib.request.Request(url)
@@ -144,15 +142,19 @@ def move_ants_history(fund_code, page_index=1):
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
         with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
         data = json.loads(html)
-        if data and data.get("Data") is None: return local_data, 0, "限流"
+        if data and data.get("Data") is None:
+            return local_data, "今日搬运太频繁，请稍后再试。"
         raw_list = data["Data"]["LSJZList"]
         new_count = 0
         for item in raw_list:
-            if not item.get("FSRQ") or not item.get("DWJZ"): continue
+            if not item.get("FSRQ") or not item.get("DWJZ"):
+                continue
             date_str = item["FSRQ"]
             if date_str not in existing_dates:
-                try: growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
-                except: growth = 0.0
+                try:
+                    growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
+                except:
+                    growth = 0.0
                 local_data.append({
                     "日期": date_str,
                     "单位净值": float(item["DWJZ"]),
@@ -163,10 +165,11 @@ def move_ants_history(fund_code, page_index=1):
         if new_count > 0:
             local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
             save_local_history(fund_code, local_data)
-            return local_data, new_count, "成功"
-        return local_data, 0, "无新数据"
+            return local_data, f"🎉 成功搬运储存了 {new_count} 天历史数据！"
+        return local_data, "👌 本页数据已存在，无需重复搬运。"
     except Exception as e:
-        return local_data, 0, f"波动({str(e)})"
+        return local_data, f"搬运遭遇波动 ({str(e)})"
+# ==================================================================================
 
 
 # --- 1. 全景卡片看板 ---
@@ -207,11 +210,11 @@ if op_mode == "📝 修改定投计划":
 
 # 功能 B：全员一键多页连挖数据同步（核心升级）
 elif op_mode == "🔄 🛠️ 智能批量搬家工作台":
-    st.markdown("#### 🚀 全员多页联动增量搬运机制（低风控优化：自动跳过本地已有分页，仅抓取缺失历史）")
-    st.caption("设置下方深度后，点击启动按钮，系统会【全自动】遍历自选池里的所有基金，自动识别本地已存储区间，跳过重复分页，仅抓取缺失早年历史，大幅减少请求防限流。")
+    st.markdown("#### 🚀 全员多页联动增量搬运机制（低风控：自动跳过本地已有分页）")
+    st.caption("设置下方深度后，点击启动按钮，系统会【全自动】遍历自选池里的所有基金，并自动跳过本地已存储分页，仅抓取缺失早年历史，减少无效请求防风控。")
     
     # 动态滑块：决定这次一键搬家搬几页
-    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2, help="1页=40天数据。选择3页意味着全员自动下载第1、2、3页，系统自动跳过本地已存在的分页。")
+    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2, help="1页=40天数据。选择3页意味着自动遍历第1、2、3页，重复分页直接跳过不请求。")
     
     if st.button(f"🔥 启动：全员一键追溯前 {max_pages} 页历史数据"):
         all_codes = list(st.session_state.fund_config.keys())
@@ -233,8 +236,11 @@ elif op_mode == "🔄 🛠️ 智能批量搬家工作台":
                 status_text.markdown(f"⏳ 正在搬运：**{f_name}** 的第 **{p_idx}** 页数据（自动校验是否重复分页）...")
                 
                 # 执行搬家
-                _, added_num, msg = move_ants_history(code, page_index=p_idx)
-                summary_results[code] += added_num
+                _, msg = move_ants_history(code, page_index=p_idx)
+                # 从消息里提取新增条数用于统计
+                if "成功搬运储存了" in msg:
+                    num = int(msg.split(" ")[3])
+                    summary_results[code] += num
                 
                 # 更新进度条
                 progress_bar.progress(step_now / total_steps)
@@ -306,8 +312,8 @@ if current_db:
         st.dataframe(df_year, use_container_width=True, hide_index=True)
         
     with t_month:
-        df_month = df_raw.groupby('月份').agg(价格中枢=('单位净值', 'mean'), 当月最高价边界=('单位净值', 'max'), 月度累计波动幅=('净值增长率', 'sum')).reset_index().sort_values(by='月份', ascending=False)
-        df_month['价格中枢'] = df_month['价格中枢'].map(lambda x: f"{x:.4f}")
+        df_month = df_raw.groupby('月份').agg(月度平均价中枢=('单位净值', 'mean'), 当月最高价边界=('单位净值', 'max'), 月度累计波动幅=('净值增长率', 'sum')).reset_index().sort_values(by='月份', ascending=False)
+        df_month['月度平均价中枢'] = df_month['月度平均价中枢'].map(lambda x: f"{x:.4f}")
         df_month['当月最高价边界'] = df_month['当月最高价边界'].map(lambda x: f"{x:.4f}")
         df_month['月度累计波动幅'] = df_month['月度累计波动幅'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_month, use_container_width=True, hide_index=True)
