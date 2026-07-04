@@ -5,6 +5,7 @@ import json
 import os
 import time
 import random
+import re  # 💡 引入正则库，用于智能解析批量粘帖的文本
 import altair as alt
 
 # 设置网页布局
@@ -110,10 +111,10 @@ st.markdown("<hr>", unsafe_allow_html=True)
 
 # --- 2. 纯净控制台 ---
 st.subheader("🛠️ 基金综合管理控制台")
-edit_code = st.selectbox("🎯 当前选中的基金（用于下方数据穿透查看）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+edit_code = st.selectbox("🎯 当前选中的基金（用于下方数据穿透及批量导入）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
 current_info = st.session_state.fund_config[edit_code]
 
-op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能一键搬家", "✍️ 紧急手动输入数据", "✨ 快捷添加新基金"], horizontal=True)
+op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能一键搬家", "📋 极速批量数据导入", "✨ 快捷添加新基金"], horizontal=True)
 
 if op_mode == "📝 修改定投计划":
     with st.form("my_edit_form"):
@@ -148,27 +149,65 @@ elif op_mode == "🔄 🛠️ 智能一键搬家":
                 time.sleep(random.uniform(1.5, 2.8))
         status_text.empty()
         if total_new > 0: st.success(f"🎉 成功搬运到 {total_new} 条最新数据！")
-        else: st.info("📊 自动接口响应为空（或已是最新状态）。如果明天依然为空，请尝试使用旁边的【✍️ 紧急手动输入数据】功能。")
+        else: st.info("📊 自动接口响应为空（或已是最新状态）。可以尝试切换到旁边的【📋 极速批量数据导入】功能。")
         st.rerun()
 
-elif op_mode == "✍️ 紧急手动输入数据":
-    st.markdown("#### 🛠️ 接口风控硬锁定紧急保底通道")
-    st.markdown("如果自动搬家遭遇风控，你只需输入最新一天的净值，看板即可立刻恢复更新！")
-    with st.form("manual_data_form"):
-        col_d1, col_d2, col_d3 = st.columns(3)
-        with col_d1: m_date = st.date_input("选择净值日期：")
-        with col_d2: m_dwjz = st.number_input("今日单位净值 (如: 1.2345)", format="%.4f", step=0.0001)
-        with col_d3: m_zzl = st.number_input("今日涨跌幅 % (如: 0.45)", format="%.2f", step=0.01)
-        submit_manual = st.form_submit_button("💾 强制写入本地总库")
-        if submit_manual:
+elif op_mode == "📋 极速批量数据导入":
+    st.markdown("#### 🚀 智能多源文本/Excel 批量粘贴对齐通道")
+    st.markdown("你可以直接去网页、Excel 或群里，把带有**日期**和**净值**的多行文本/表格整块复制并粘贴到下方（系统会自动洗去杂质并去重）。")
+    
+    # 大文本输入框提供超大的粘贴自由度
+    raw_paste_text = st.text_area(
+        "📝 请在此处直接粘贴历史数据明细：", 
+        height=180, 
+        placeholder="支持各种杂乱格式，例如：\n2026-07-03  1.2345  0.45%\n2026-07-02  1.2210  -0.12%\n系统会自动精准提取，无惧空格或符号！"
+    )
+    
+    if st.button("⚡ 启动智能清洗并批量导入库"):
+        if not raw_paste_text.strip():
+            st.error("⚠️ 粘贴板空空如也，请先复制数据后再点这里！")
+        else:
+            lines = raw_paste_text.split('\n')
             local_data = load_local_history(edit_code)
-            date_str = m_date.strftime('%Y-%m-%d')
-            local_data = [item for item in local_data if item['日期'] != date_str] # 去重
-            local_data.append({"日期": date_str, "单位净值": m_dwjz, "累计净值": m_dwjz, "净值增长率": m_zzl})
-            local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
-            save_local_history(edit_code, local_data)
-            st.success(f"🎉 日期 {date_str} 净值成功强行录入本地！图表已激活。")
-            st.rerun()
+            existing_dates = {item['日期'] for item in local_data}
+            
+            import_count = 0
+            # 💡 高级正则：智能抓取 YYYY-MM-DD 或 YYYY/MM/DD 后跟的小数净值
+            pattern = re.compile(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+([0-9.]+)')
+            
+            for line in lines:
+                match = pattern.search(line)
+                if match:
+                    raw_date = match.group(1).replace('/', '-').replace('.', '-')
+                    # 补齐日期格式为标准的 YYYY-MM-DD
+                    parts = raw_date.split('-')
+                    standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+                    
+                    try:
+                        dwjz_val = float(match.group(2))
+                        # 尝试智能抓取可能存在的涨跌幅百分比，若没有则默认给 0.0
+                        growth_match = re.search(r'([-+]?[0-9.]+)%', line)
+                        growth_val = float(growth_match.group(1)) if growth_match else 0.0
+                        
+                        # 覆盖式更新或直接新增
+                        local_data = [item for item in local_data if item['日期'] != standard_date]
+                        local_data.append({
+                            "日期": standard_date,
+                            "单位净值": dwjz_val,
+                            "累计净值": dwjz_val,
+                            "净值增长率": growth_val
+                        })
+                        import_count += 1
+                    except:
+                        continue
+            
+            if import_count > 0:
+                local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
+                save_local_history(edit_code, local_data)
+                st.success(f"🎉 【批量导入大获全胜】成功解析并合并写入了 {import_count} 天的数据到本地库！图表已完美对齐刷新。")
+                st.rerun()
+            else:
+                st.error("⚠️ 没能识别出有效数据！请确保粘贴的文本中，每一行都包含形如 '2026-07-03' 的日期和其紧跟的数字净值。")
 
 else:
     with st.form("add_new_fund_form"):
@@ -273,4 +312,4 @@ if current_db:
         df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.info("💡 当前该基金本地总库为空。控制台已增加【✍️ 紧急手动输入数据】选项，在自动接口恢复前可以随时手动补登。")
+    st.info("💡 当前该基金本地总库为空。控制台已激活【📋 极速批量数据导入】功能，可以直接把网页上的多天明细一键粘贴进来生成大盘！")
