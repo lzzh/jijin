@@ -338,7 +338,7 @@ def fetch_latest_valuation_online(fund_code):
     return None
 
 # ══════════════════════════════════════════════
-# 【修复分页试探逻辑】断点续爬：延长试探循环上限，不会漏掉page2历史数据
+# 【修复IndexError空列表越界】断点续爬：延长试探循环上限，不会漏掉page2历史数据
 # ══════════════════════════════════════════════
 def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
     local_data = load_local_history(fund_code)
@@ -407,7 +407,11 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
             existing_date_set.add(d)
             page1_add += 1
     total_new_records += page1_add
-    log_detail.append(f"第1页（当日增量）：日期区间 {page1_dates[0]} ~ {page1_dates[-1]} | 获取{len(page1_data)}条，新增缺失{page1_add}条")
+    # 空列表防护，杜绝IndexError
+    if len(page1_dates) > 0:
+        log_detail.append(f"第1页（当日增量）：日期区间 {page1_dates[0]} ~ {page1_dates[-1]} | 获取{len(page1_data)}条，新增缺失{page1_add}条")
+    else:
+        log_detail.append(f"第1页（当日增量）：接口返回空数据，无当日净值 | 获取0条，新增缺失{page1_add}条")
     time.sleep(random.uniform(0.2, 0.35))
 
     # ===================== 步骤2：分分支处理本地有无数据 =====================
@@ -429,7 +433,11 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
             temp_page_data, temp_dates = fetch_single_page(fund_code, probe_page)
             if not temp_page_data:
                 break
-            log_detail.append(f"试探第{probe_page}页，页面日期范围 {temp_dates[0]} ~ {temp_dates[-1]}")
+            # 空列表防护
+            if len(temp_dates) > 0:
+                log_detail.append(f"试探第{probe_page}页，页面日期范围 {temp_dates[0]} ~ {temp_dates[-1]}")
+            else:
+                log_detail.append(f"试探第{probe_page}页，页面无净值数据")
             if local_min_date in temp_dates:
                 found_split_page = probe_page
                 log_detail.append(f"✅ 第{probe_page}页包含本地最早日期{local_min_date}，分界页码定位成功")
@@ -462,7 +470,11 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
                 existing_date_set.add(d)
                 page_add += 1
         total_new_records += page_add
-        log_detail.append(f"第{current_page}页（缺失历史）：日期区间 {page_dates[0]} ~ {page_dates[-1]} | 获取{len(page_data)}条，新增缺失{page_add}条")
+        # 空列表防护
+        if len(page_dates) > 0:
+            log_detail.append(f"第{current_page}页（缺失历史）：日期区间 {page_dates[0]} ~ {page_dates[-1]} | 获取{len(page_data)}条，新增缺失{page_add}条")
+        else:
+            log_detail.append(f"第{current_page}页（缺失历史）：无日期数据 | 获取{len(page_data)}条，新增缺失{page_add}条")
         current_page += 1
         time.sleep(random.uniform(0.2, 0.4))
 
@@ -506,7 +518,7 @@ st.markdown(f"""
     <h1>📊 定投监控看板</h1>
     <div class="subtitle">
         {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元<br>
-        ⚙️ 抓取逻辑修复：延长页面试探上限、打印每页日期区间、双估值接口兜底、不会漏掉中间历史分页
+        ⚙️ 抓取逻辑修复：增加空列表防护杜绝IndexError、延长页面试探上限、打印每页日期区间、双估值接口兜底、不会漏掉中间历史分页
     </div>
 """, unsafe_allow_html=True)
 
@@ -560,8 +572,8 @@ op_mode = st.radio("系统功能切换", ["🔄 智能搬家与估值爬取", "�
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
 if op_mode == "🔄 智能搬家与估值爬取":
-    st.markdown("**🌐 智能断点抓取引擎（修复分页试探逻辑+双估值接口）**")
-    st.caption("1.最多试探20页定位本地数据分界，不会漏掉page2中间历史；2.每页打印日期区间，直观确认覆盖时段；3.网页兜底估值接口，解决无返回问题；4.仅抓取缺失区间，防风控")
+    st.markdown("**🌐 智能断点抓取引擎（修复分页试探逻辑+空列表报错防护+双估值接口）**")
+    st.caption("1.最多试探20页定位本地数据分界，不会漏掉page2中间历史；2.增加空页面判断，彻底消除IndexError崩溃；3.每页打印日期区间，直观确认覆盖时段；4.网页兜底估值接口，解决无返回问题；5.仅抓取缺失区间，防风控")
 
     if 'migration_log' in st.session_state and st.session_state.migration_log:
         total_new = st.session_state.migration_log.get('total_new', 0)
