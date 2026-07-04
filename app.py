@@ -114,7 +114,7 @@ _HEADERS = {
     'Accept-Language': 'zh-CN,zh;q=0.9',
 }
 
-def http_get(url, extra_headers=None, timeout=15):
+def http_get(url, extra_headers=None, timeout=30):  # 超时延长至30秒
     """返回 (text, error)，失败时 text=None"""
     h = {**_HEADERS, **(extra_headers or {})}
     try:
@@ -149,11 +149,6 @@ def fetch_index_raw(secid):
     """
     从东方财富 push2 接口抓取指数全部常用字段，用于诊断哪个字段是 PE。
     返回 (field_dict, error)
-    已知字段含义（股票/指数可能有差异）：
-      f9   = 市盈率(动)   f114 = 市盈率(静)   f115 = 市盈率(TTM)
-      f116 = 市净率(PB)   f117 = 市销率(PS)
-      f162 = 股息率(动)   f163 = 股息率(静)
-      f14  = 名称         f2   = 最新价
     """
     fields = 'f2,f9,f114,f115,f116,f117,f162,f163,f14'
     url = (
@@ -179,7 +174,7 @@ def fetch_index_valuation(secid):
         'pb': None, 'div_yield': None, 'notes': []
     }
 
-    # ── 来源 A：push2 行情接口（字段诊断）──
+    # ── 来源 A：push2 行情接口 ──
     raw, err = fetch_index_raw(secid)
     if raw:
         pe_ttm    = _parse_float(raw.get('f115'))
@@ -187,14 +182,13 @@ def fetch_index_valuation(secid):
         pe_static = _parse_float(raw.get('f114'))
         pb        = _parse_float(raw.get('f116'))
         div       = _parse_float(raw.get('f162'))
-        # 仅当有效值才记录
-        if pe_ttm is not None and pe_ttm > 0:
+        if pe_ttm is not None:
             result['pe_ttm'] = pe_ttm
-        if pe_dyn is not None and pe_dyn > 0:
+        if pe_dyn is not None:
             result['pe_dyn'] = pe_dyn
-        if pe_static is not None and pe_static > 0:
+        if pe_static is not None:
             result['pe_static'] = pe_static
-        if pb is not None and pb > 0 and pb < 1000:  # 过滤异常大值
+        if pb is not None and pb < 1000:
             result['pb'] = pb
         if div is not None and div > 0:
             result['div_yield'] = f'{div:.2f}%'
@@ -205,7 +199,7 @@ def fetch_index_valuation(secid):
     else:
         result['notes'].append(f'push2 失败: {err}')
 
-    # ── 来源 B：东方财富数据中心（指数基本面专用表）──
+    # ── 来源 B：东方财富数据中心（指数基本面专用表） ──
     market, code_only = secid.split('.')
     suffix = 'SH' if market == '1' else 'SZ'
     secucode = f'{code_only}.{suffix}'
@@ -218,20 +212,18 @@ def fetch_index_valuation(secid):
     text2, err2 = http_get(dc_url)
     if text2:
         try:
-            data2 = json.loads(text2).get('result', {})
-            rows = data2.get('data')
-            if rows and isinstance(rows, list) and len(rows) > 0:
-                row = rows[0]
+            data2 = json.loads(text2).get('result')
+            if isinstance(data2, dict) and data2.get('data') and len(data2['data']) > 0:
+                row = data2['data'][0]
                 dc_pe_ttm = _parse_float(row.get('PETTM'))
                 dc_pe     = _parse_float(row.get('PE'))
                 dc_pb     = _parse_float(row.get('PB'))
                 dc_div    = _parse_float(row.get('DIVIDENDYIELD'))
-                # 以数据中心结果覆盖（更可信）
-                if dc_pe_ttm is not None and dc_pe_ttm > 0:
+                if dc_pe_ttm is not None:
                     result['pe_ttm'] = dc_pe_ttm
-                if dc_pe is not None and dc_pe > 0:
+                if dc_pe is not None:
                     result['pe_static'] = dc_pe
-                if dc_pb is not None and dc_pb > 0 and dc_pb < 1000:
+                if dc_pb is not None and dc_pb < 1000:
                     result['pb'] = dc_pb
                 if dc_div is not None and dc_div > 0:
                     result['div_yield'] = f'{dc_div:.2f}%'
@@ -240,7 +232,7 @@ def fetch_index_valuation(secid):
                     f'PB={row.get("PB")} DIV={row.get("DIVIDENDYIELD")}]'
                 )
             else:
-                result['notes'].append('datacenter 返回空行或无效数据')
+                result['notes'].append('datacenter 返回空数据或格式异常')
         except Exception as e:
             result['notes'].append(f'datacenter 解析失败: {e}')
     else:
