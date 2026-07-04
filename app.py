@@ -166,7 +166,7 @@ else:
                 st.rerun()
 
 
-# --- 3. 多维增量穿透大盘 + 🎨【色彩重构】定制多轨折线图 ---
+# --- 3. 多维增量穿透大盘 + 💡【重大升级】多尺度时间切片控制台 ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
@@ -178,38 +178,58 @@ if current_db:
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
     
-    st.markdown("**📉 历史趋势全动态走势图（🚨红线：最高价边界 | 🎯绿线：月度平均中枢）**")
-    
-    # 重新计算月度指标
-    df_metrics = df_raw.groupby('月份').agg(
-        月度平均价中枢=('单位净值', 'mean'),
-        当月最高价边界=('单位净值', 'max')
-    ).reset_index()
-    
-    df_chart_src = pd.merge(df_raw, df_metrics, on='月份', how='left')
-    
-    # 重新整理图表列顺序
-    df_chart_final = df_chart_src.set_index('日期').sort_index()[[
-        '单位净值', '月度平均价中枢', '当月最高价边界'
-    ]]
-    
-    # 🎨 核心色彩重写映射字典：匹配直觉的高级看盘调色盘
-    color_map = {
-        '单位净值': '#1F77B4',       # 经典科技蓝：主趋势线
-        '月度平均价中枢': '#25A15C',   # 安全通行绿：中枢抄底参考线 🎯
-        '当月最高价边界': '#FF4B4B'    # 警戒摸顶红：天花板防线 🚨
-    }
-    
-    # 渲染带有定制颜色属性的交互式图表
-    st.line_chart(
-        df_chart_final, 
-        x_label="交易日期", 
-        y_label="基金净值及多维边界参考",
-        color=[color_map[col] for col in df_chart_final.columns]
+    # ⏱️ 核心创新：引入快速切换时间跨度的 Radio 按钮组
+    time_frame = st.radio(
+        "🎛️ 请选择图表视窗的时间跨度：",
+        ["📅 近1个月", "📅 近3个月", "📅 近6个月", "📅 近1年", "🌍 全部（从有数据开始）"],
+        horizontal=True,
+        index=4  # 默认展示“全部”，防止漏看历史
     )
-    st.caption("💡 读图新指南：当【蓝色净值线】下穿【绿色中枢线】时，意味着价格低于月度平均水平，信号安全；若逼近【红色天花板】，需警惕回调风险。")
     
-    # 三选项卡数据面板
+    # 动态过滤算法
+    latest_date = df_raw['日期'].max()
+    if time_frame == "📅 近1个月":
+        df_filtered = df_raw[df_raw['日期'] >= (latest_date - pd.Timedelta(days=30))]
+    elif time_frame == "📅 近3个月":
+        df_filtered = df_raw[df_raw['日期'] >= (latest_date - pd.Timedelta(days=90))]
+    elif time_frame == "📅 近6个月":
+        df_filtered = df_raw[df_raw['日期'] >= (latest_date - pd.Timedelta(days=180))]
+    elif time_frame == "📅 近1年":
+        df_filtered = df_raw[df_raw['日期'] >= (latest_date - pd.Timedelta(days=365))]
+    else:
+        df_filtered = df_raw.copy()
+        
+    if not df_filtered.empty:
+        st.markdown(f"**📉 走势全扫描（当前视窗：{time_frame} | 🚨红线：最高价边界 | 🎯绿线：月度平均中枢）**")
+        
+        # 基于【过滤后的当前视窗数据】独立动态生成月度分析指标，消除全局历史污染
+        df_metrics = df_filtered.groupby('月份').agg(
+            月度平均价中枢=('单位净值', 'mean'),
+            当月最高价边界=('单位净值', 'max')
+        ).reset_index()
+        
+        df_chart_src = pd.merge(df_filtered, df_metrics, on='月份', how='left')
+        
+        df_chart_final = df_chart_src.set_index('日期').sort_index()[[
+            '单位净值', '月度平均价中枢', '当月最高价边界'
+        ]]
+        
+        color_map = {
+            '单位净值': '#1F77B4',       # 经典科技蓝
+            '月度平均价中枢': '#25A15C',   # 抄底安全绿 🎯
+            '当月最高价边界': '#FF4B4B'    # 警惕高位红 🚨
+        }
+        
+        st.line_chart(
+            df_chart_final, 
+            x_label="交易日期", 
+            y_label="基金净值及多维边界参考",
+            color=[color_map[col] for col in df_chart_final.columns]
+        )
+    else:
+        st.warning("⚠️ 当前选中的短时间范围内暂无搬运到的历史数据，请切换到更长跨度或前往批量搬家工作台下载。")
+        
+    # 三选项卡数据面板（保持完整数据呈现）
     t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
     
     with t_year:
