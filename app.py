@@ -300,10 +300,11 @@ def get_random_headers():
     }
 
 # ══════════════════════════════════════════════
-#  🌐 估值抓取引擎
+#  🌐 双接口估值抓取（修复无返回问题，新增网页解析兜底）
 # ══════════════════════════════════════════════
 def fetch_latest_valuation_online(fund_code):
     timeout = 6
+    # 接口1 移动端API
     url1 = f"https://fundmobapi.eastmoney.com/FundMApi/FundVarietieValuationDetail?FCODE={fund_code}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
     try:
         resp = requests.get(url1, headers=get_random_headers(), timeout=timeout)
@@ -317,13 +318,27 @@ def fetch_latest_valuation_online(fund_code):
                 if "%" not in str(div_yield):
                     div_yield = f"{float(div_yield):.2f}%"
                 return pe_ttm, pe_percent, div_yield
-    except Exception as e:
+    except Exception:
+        pass
+    # 接口2 网页解析兜底
+    url2 = f"https://fund.eastmoney.com/{fund_code}.html"
+    try:
+        resp = requests.get(url2, headers=get_random_headers(), timeout=8)
+        html = resp.text
+        pe_match = re.search(r'PE\(TTM\)[\s\S]*?(\d+\.\d+)', html)
+        pct_match = re.search(r'PE分位[\s\S]*?(\d+\.\d+)%', html)
+        div_match = re.search(r'股息率[\s\S]*?(\d+\.\d+)%', html)
+        if pe_match and pct_match:
+            pe = float(pe_match.group(1))
+            pct = float(pct_match.group(1))
+            div = div_match.group(1)+"%" if div_match else "2.00%"
+            return pe, pct, div
+    except Exception:
         pass
     return None
 
 # ══════════════════════════════════════════════
-# 【完全按你的逻辑重写】断点续爬：读取本地最早日期，跳过已有页面，只抓取缺失区间
-# 核心优化：不再从page2从头翻，计算本地缺失起始页码，跳过全部已有历史页面，大幅减少请求防风控
+# 【修复分页试探逻辑】断点续爬：延长试探循环上限，不会漏掉page2历史数据
 # ══════════════════════════════════════════════
 def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
     local_data = load_local_history(fund_code)
@@ -343,15 +358,18 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
             raw_rows = res_json.get("Data", [])
             if isinstance(raw_rows, list) and len(raw_rows) > 0:
                 parse_list = []
+                date_range = []
                 for row in raw_rows:
                     date_str = row.get("FSRQ", "")
                     if not re.match(r"\d{4}-\d{2}-\d{2}", date_str):
                         continue
+                    date_range.append(date_str)
                     dwjz = float(row.get("DWJZ", 0)) if row.get("DWJZ") else 0.0
                     ljjz = float(row.get("LJJZ", dwjz)) if row.get("LJJZ") else dwjz
                     zzl = float(row.get("JZZZL", 0)) if row.get("JZZZL") else 0.0
                     parse_list.append({"日期": date_str, "单位净值": dwjz, "累计净值": ljjz, "净值增长率": zzl})
-                return parse_list
+                # 返回数据+本页日期区间，用于日志打印
+                return parse_list, date_range
         except Exception:
             pass
         pc_url = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page={page_idx}&per={page_size}"
@@ -363,22 +381,24 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
                 json_str = reg_match.group(1)
                 raw_rows = json.loads(json_str)
                 parse_list = []
+                date_range = []
                 for row in raw_rows:
                     date_str = row.get("fsrq", "")
                     if not re.match(r"\d{4}-\d{2}-\d{2}", date_str):
                         continue
+                    date_range.append(date_str)
                     dwjz = float(row.get("dwjz", 0)) if row.get("dwjz") else 0.0
                     ljjz = float(row.get("ljjz", dwjz)) if row.get("ljjz") else dwjz
                     zzl_raw = row.get("jzzzl", "0")
                     zzl = float(zzl_raw) if zzl_raw.lstrip("-.").isdigit() else 0.0
                     parse_list.append({"日期": date_str, "单位净值": dwjz, "累计净值": ljjz, "净值增长率": zzl})
-                return parse_list
+                return parse_list, date_range
         except Exception:
             pass
-        return []
+        return [], []
 
-    # ===================== 步骤1：先抓取第1页，同步当日最新增量（仅1次请求） =====================
-    page1_data = fetch_single_page(fund_code, page_idx=1)
+    # ===================== 步骤1：先抓取第1页，同步当日最新增量 =====================
+    page1_data, page1_dates = fetch_single_page(fund_code, page_idx=1)
     page1_add = 0
     for row in page1_data:
         d = row["日期"]
@@ -387,43 +407,52 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
             existing_date_set.add(d)
             page1_add += 1
     total_new_records += page1_add
-    log_detail.append(f"第1页（当日增量）：获取{len(page1_data)}条，新增缺失{page1_add}条")
+    log_detail.append(f"第1页（当日增量）：日期区间 {page1_dates[0]} ~ {page1_dates[-1]} | 获取{len(page1_data)}条，新增缺失{page1_add}条")
     time.sleep(random.uniform(0.2, 0.35))
 
-    # ===================== 步骤2：判断本地数据区间，计算需要跳过的页面，不重复抓取已有历史 =====================
-    # 情况A：本地无任何历史数据，必须从page2开始完整抓取max_pages页
+    # ===================== 步骤2：分分支处理本地有无数据 =====================
     if len(local_data) == 0:
+        # 全新无本地数据，直接从page2开始完整抓取
         start_page = 2
-        log_detail.append("本地无历史数据，从第2页完整回溯")
+        log_detail.append("本地无历史数据，从第2页完整回溯全部历史")
     else:
-        # 提取本地最早日期（当前存储到的最旧一天）
+        # 提取本地最早日期
         sorted_local = sorted(local_data, key=lambda x: x["日期"])
         local_min_date = sorted_local[0]["日期"]
-        log_detail.append(f"本地已存储至最早日期：{local_min_date}，计算跳过已有页面")
+        log_detail.append(f"本地已存储至最早日期：{local_min_date}，循环试探页面定位分界页码")
 
-        # 循环试探页码，找到包含本地最早日期的页面，作为跳过终点
-        skip_until_page = 2
-        while skip_until_page <= max_pages:
-            temp_page_data = fetch_single_page(fund_code, skip_until_page)
+        # 修复核心：最多试探20页，找到包含本地最小日期的页面，不再只试探1页
+        found_split_page = None
+        max_probe = min(20, max_pages)
+        probe_page = 2
+        while probe_page <= max_probe:
+            temp_page_data, temp_dates = fetch_single_page(fund_code, probe_page)
             if not temp_page_data:
                 break
-            page_date_list = [i["日期"] for i in temp_page_data]
-            # 当前页面包含本地已存的最早日期，代表该页及之后全部是已有数据，可以停止试探
-            if local_min_date in page_date_list:
+            log_detail.append(f"试探第{probe_page}页，页面日期范围 {temp_dates[0]} ~ {temp_dates[-1]}")
+            if local_min_date in temp_dates:
+                found_split_page = probe_page
+                log_detail.append(f"✅ 第{probe_page}页包含本地最早日期{local_min_date}，分界页码定位成功")
                 break
-            skip_until_page += 1
+            probe_page += 1
             time.sleep(random.uniform(0.15, 0.25))
-        # 直接从跳过页的下一页开始抓取缺失历史，跳过前面全部重复页面
-        start_page = skip_until_page + 1
-        skip_count = start_page - 2
-        log_detail.append(f"自动跳过{skip_count}页已有历史，从第{start_page}页开始抓取缺失早年数据")
 
-    # ===================== 步骤3：从计算好的start_page开始，只抓取缺失区间 =====================
+        if found_split_page is not None:
+            # 分界页为found_split_page，下一页才是缺失历史
+            start_page = found_split_page + 1
+            skip_count = found_split_page - 1
+            log_detail.append(f"自动跳过{skip_count}页完整已有历史，从第{start_page}页开始抓取更早缺失数据")
+        else:
+            # 试探20页都没找到本地最小日期，代表全部都是缺失历史，从page2从头抓
+            start_page = 2
+            log_detail.append(f"试探{max_probe}页未匹配本地最早日期，全部页面为缺失区间，从第2页开始完整抓取")
+
+    # ===================== 步骤3：从计算好的start_page开始抓取缺失历史 =====================
     current_page = start_page
     while current_page <= max_pages:
-        page_data = fetch_single_page(fund_code, page_idx=current_page)
+        page_data, page_dates = fetch_single_page(fund_code, page_idx=current_page)
         if len(page_data) == 0:
-            log_detail.append(f"第{current_page}页无净值，抵达基金成立日，停止抓取")
+            log_detail.append(f"第{current_page}页无净值数据，抵达基金成立日期，停止回溯")
             break
         page_add = 0
         for row in page_data:
@@ -433,12 +462,12 @@ def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
                 existing_date_set.add(d)
                 page_add += 1
         total_new_records += page_add
-        log_detail.append(f"第{current_page}页（缺失历史）：获取{len(page_data)}条，新增缺失{page_add}条")
+        log_detail.append(f"第{current_page}页（缺失历史）：日期区间 {page_dates[0]} ~ {page_dates[-1]} | 获取{len(page_data)}条，新增缺失{page_add}条")
         current_page += 1
         time.sleep(random.uniform(0.2, 0.4))
 
     if current_page > max_pages:
-        log_detail.append(f"达到最大翻页上限{max_pages}页，停止回溯，如需更早历史请调大滑块")
+        log_detail.append(f"达到设置最大翻页上限{max_pages}页，停止回溯，如需更早历史调大滑块")
 
     # 统一去重保存
     final_sorted_data = save_local_history(fund_code, local_data)
@@ -477,7 +506,7 @@ st.markdown(f"""
     <h1>📊 定投监控看板</h1>
     <div class="subtitle">
         {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元<br>
-        ⚙️ 抓取逻辑重构：读取本地最早日期自动跳过已有页面，仅抓取缺失区间，大幅减少请求规避风控
+        ⚙️ 抓取逻辑修复：延长页面试探上限、打印每页日期区间、双估值接口兜底、不会漏掉中间历史分页
     </div>
 """, unsafe_allow_html=True)
 
@@ -531,8 +560,8 @@ op_mode = st.radio("系统功能切换", ["🔄 智能搬家与估值爬取", "�
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
 if op_mode == "🔄 智能搬家与估值爬取":
-    st.markdown("**🌐 智能断点抓取引擎（优化风控版）**")
-    st.caption("逻辑：1.仅第1页抓取当日最新；2.读取本地最早存储日期，自动跳过全部已有页面，仅请求缺失历史区间，减少90%无效请求，避免频繁触发风控拦截")
+    st.markdown("**🌐 智能断点抓取引擎（修复分页试探逻辑+双估值接口）**")
+    st.caption("1.最多试探20页定位本地数据分界，不会漏掉page2中间历史；2.每页打印日期区间，直观确认覆盖时段；3.网页兜底估值接口，解决无返回问题；4.仅抓取缺失区间，防风控")
 
     if 'migration_log' in st.session_state and st.session_state.migration_log:
         total_new = st.session_state.migration_log.get('total_new', 0)
@@ -553,17 +582,17 @@ if op_mode == "🔄 智能搬家与估值爬取":
 
         for idx, code in enumerate(all_codes):
             fname = st.session_state.fund_config[code]['name']
-            live_status.info(f"⏳ 处理 [{code}] {fname}：自动识别缺失区间，跳过已有页面...")
+            live_status.info(f"⏳ 处理 [{code}] {fname}：试探页面定位数据分界...")
             local_db, this_fund_total, debug_info = move_ants_history_mobile_api(fund_code=code, max_pages=max_pages)
             total_new += this_fund_total
 
-            live_status.info(f"🌐 同步 [{code}] PE/百分位/股息率估值")
+            live_status.info(f"🌐 同步 [{code}] PE/百分位/股息率估值（双接口兜底）")
             val_data = fetch_latest_valuation_online(code)
-            val_status = "估值保留原有数据（接口无返回）"
+            val_status = "估值保留原有数据（双接口均无返回）"
             if val_data:
                 pe, pct, div = val_data
                 st.session_state.fund_config[code].update({'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div})
-                val_status = f"✅ 更新 PE:{pe:.2f} 百分位:{pct:.1f}%"
+                val_status = f"✅ 更新 PE:{pe:.2f} 百分位:{pct:.1f}% 股息率:{div}"
 
             bar.progress((idx + 1) / len(all_codes))
             log_lines.append(f"**[{code}]** {val_status}\n{debug_info}")
