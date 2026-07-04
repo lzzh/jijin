@@ -3,6 +3,7 @@ import pandas as pd
 import urllib.request
 import json
 import os
+import plotly.express as px  # ⚙️ 引入专业的交互式图表库
 
 # 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
@@ -23,7 +24,7 @@ st.markdown("""
 st.title("📊 我的智能化定投实时监控看板")
 
 CONFIG_FILE = "my_fund_settings.json"
-HISTORY_DIR = "fund_history_db" # 创建一个本地增量历史数据库文件夹
+HISTORY_DIR = "fund_history_db"
 if not os.path.exists(HISTORY_DIR):
     os.makedirs(HISTORY_DIR)
 
@@ -34,12 +35,20 @@ DEFAULT_CONFIG = {
     '023917': {'name': '华夏国证自由现金流ETF发起式联接A', 'index_name': '国证自由现金流', 'period': '每周二', 'amount': 790, 'pe_ttm': 11.68, 'pe_percent': 30.77, 'div_yield': '3.20%', 'status': '深度低估、均衡现金流', 'base_strategy': '💎 绝对核心加仓区！建议【坚定执行当前计划 {plan}】。'}   
 }
 
-if 'fund_config' not in st.session_state:
-    st.session_state.fund_config = DEFAULT_CONFIG
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
+        except: return DEFAULT_CONFIG
+    return DEFAULT_CONFIG
 
-# --- 🛠️ 核心：蚂蚁搬家式文件读取与安全增量累加器 ---
+def save_config(config):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(config, f, ensure_ascii=False, indent=4)
+
+if 'fund_config' not in st.session_state:
+    st.session_state.fund_config = load_config()
+
 def load_local_history(fund_code):
-    """读取本地已经攒下来的历史数据档案"""
     file_path = os.path.join(HISTORY_DIR, f"{fund_code}_hist.json")
     if os.path.exists(file_path):
         try:
@@ -48,68 +57,43 @@ def load_local_history(fund_code):
     return []
 
 def save_local_history(fund_code, data_list):
-    """将搬家合并后的最新大总库固化写入文件"""
     file_path = os.path.join(HISTORY_DIR, f"{fund_code}_hist.json")
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data_list, f, ensure_ascii=False, indent=4)
+    with open(file_path, "w", encoding="utf-8") as f: json.dump(data_list, f, ensure_ascii=False, indent=4)
 
 def move_ants_history(fund_code, page_index=1):
-    """蚂蚁搬家主力：单次只安全抓取 1 页（40条），拉下来后与本地历史库合并去重"""
     local_data = load_local_history(fund_code)
-    
     try:
-        # 单次只请求 40 条，绝对安全，不会被天天基金风控拦截
         url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize=40"
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-        
-        with urllib.request.urlopen(req, timeout=3) as response:
-            html = response.read().decode('utf-8')
+        with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
         data = json.loads(html)
-        
-        if data and data.get("Data") is None:
-            return local_data, "今日云端搬运次数触发频繁限制，请稍后再试。"
-            
+        if data and data.get("Data") is None: return local_data, "今日搬运太频繁，请稍后再试。"
         raw_list = data["Data"]["LSJZList"]
         new_count = 0
-        
-        # 提取已有日期的集合，便于去重
         existing_dates = {item['日期'] for item in local_data}
-        
         for item in raw_list:
             if not item.get("FSRQ") or not item.get("DWJZ"): continue
             date_str = item["FSRQ"]
             if date_str not in existing_dates:
                 try: growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
                 except: growth = 0.0
-                
-                local_data.append({
-                    "日期": date_str,
-                    "单位净值": float(item["DWJZ"]),
-                    "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
-                    "净值增长率": growth
-                })
+                local_data.append({"日期": date_str, "单位净值": float(item["DWJZ"]), "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]), "净值增长率": growth})
                 new_count += 1
-                
         if new_count > 0:
-            # 重新按日期从新到旧排序
             local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
             save_local_history(fund_code, local_data)
-            return local_data, f"🎉 蚂蚁搬家成功！本次新搬运储存了 {new_count} 天历史数据！"
-        else:
-            return local_data, "👌 本页数据已存在于本地历史总库中，无需重复搬运。"
-            
-    except Exception as e:
-        return local_data, f"搬运时网络开小差了 ({str(e)})，已自动展示本地现有库存。"
-
+            return local_data, f"🎉 成功搬运储存了 {new_count} 天历史数据！"
+        return local_data, "👌 本页数据已存在，无需重复搬运。"
+    except Exception as e: return local_data, f"搬运遭遇波动 ({str(e)})"
 
 # --- 1. 全景卡片看板 ---
 st.subheader("📋 我的定投核心资产智能执行卡片")
 for code, info in st.session_state.fund_config.items():
     plan_str = f"{info['period']} {info['amount']}元"
     strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
-    st.markdown(f'<div class="fund-card"><div class="fund-title">📈 {info['name']} ({code})</div><div class="fund-tag">跟踪指数: {info['index_name']}</div> | <div class="fund-tag" style="color:#FFF;">当前计划: {plan_str}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="fund-card"><div class="fund-title">📈 {info["name"]} ({code})</div><div class="fund-tag">跟踪指数: {info["index_name"]}</div> | <div class="fund-tag" style="color:#FFF;">当前计划: {plan_str}</div></div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     c1.metric("10年 PE 百分位", f"{info['pe_percent']:.2f}%")
     c2.metric("当前 PE", f"{info['pe_ttm']:.2f}")
@@ -118,63 +102,102 @@ for code, info in st.session_state.fund_config.items():
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
+# --- 2. 综合控制台 ---
+with st.expander("⚙️ 点击展开：智能基金配置与数据搬运控制台"):
+    st.markdown("### 1️⃣ 修改并永久保存定投计划")
+    edit_code = st.selectbox("选择要修改或搬运数据的基金：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
+    current_info = st.session_state.fund_config[edit_code]
+    col_p, col_a = st.columns(2)
+    with col_p: new_period = st.text_input("修改定投周期：", value=current_info['period'], key=f"p_{edit_code}")
+    with col_a: new_amount = st.number_input("修改定投金额 (元)：", value=int(current_info['amount']), step=10, key=f"a_{edit_code}")
+    if st.button("💾 确认更新并永久保存计划"):
+        st.session_state.fund_config[edit_code]['period'] = new_period
+        st.session_state.fund_config[edit_code]['amount'] = new_amount
+        save_config(st.session_state.fund_config)
+        st.success("🎉 配置已固化到云端！正在自动刷新看板...")
+        st.rerun()
+        
+    st.markdown("---")
+    st.markdown("### 2️⃣ 蚂蚁搬家数据流管理")
+    col_btn1, col_btn2, _ = st.columns([2, 2, 4])
+    current_db = load_local_history(edit_code)
+    with col_btn1:
+        if st.button("🔄 蚂蚁搬家：顺路下载最新40天数据", key="btn_ants"):
+            current_db, msg = move_ants_history(edit_code, page_index=1)
+            st.toast(msg)
+            st.rerun()
+    with col_btn2:
+        target_page = st.number_input("搬运更深历史(页码)", min_value=1, max_value=100, value=2, step=1, key="num_page")
+        if st.button("⛏️ 深度挖掘旧历史", key="btn_dig"):
+            current_db, msg = move_ants_history(edit_code, page_index=target_page)
+            st.toast(msg)
+            st.rerun()
 
-# --- 2. 智能化多维增量穿透大盘（核心进化区） ---
-st.subheader("🔍 单只基金历史多维增量穿透总库")
-select_detail = st.selectbox("选择要分析/搬运数据的基金：", list(st.session_state.fund_config.keys()),
-                             format_func=lambda x: st.session_state.fund_config[x]['name'])
+# --- 3. 多维增量穿透大盘 + 🎬 高交互移动端折线图 ---
+st.markdown("<br>", unsafe_allow_html=True)
+st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
-# 初始化加载或增量搬运
-current_db = load_local_history(select_detail)
-
-col_btn1, col_btn2, col_info = st.columns([1.5, 1.5, 5])
-with col_btn1:
-    if st.button("🔄 蚂蚁搬家：顺路下载最新40天数据"):
-        current_db, msg = move_ants_history(select_detail, page_index=1)
-        st.toast(msg)
-with col_btn2:
-    # 允许深入历史老数据页面去挖掘更早的40天
-    target_page = st.number_input("搬运更深历史(页码)", min_value=1, max_value=100, value=2, step=1)
-    if st.button("⛏️ 深度挖掘旧历史"):
-        current_db, msg = move_ants_history(select_detail, page_index=target_page)
-        st.toast(msg)
-
-# 转换数据用于面板分析
 if current_db:
     df_raw = pd.DataFrame(current_db)
     df_raw['日期'] = pd.to_datetime(df_raw['日期'])
+    # 按日期正序排列（图表从左往右延伸必须是正序）
+    df_chart = df_raw.sort_values(by='日期', ascending=True)
+    
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
     
-    st.caption(f"📊 当前本地历史总库已复利滚雪球至：**{len(df_raw)} 天** 历史长度。随着你搬运次数越多，分析越精准！")
+    # 📈 --- 【新增】Plotly 全动态手势缩放折线图模块 ---
+    st.markdown("**📉 历史趋势全动态走势图（支持手机端双指捏合缩放、拖拽）**")
     
-    t_year, t_month, t_day = st.tabs(["📅 累计年度大盘分析", "🌙 累计月度公允价格中枢", "📄 总库原生日流水"])
+    fig = px.line(
+        df_chart, 
+        x='日期', 
+        y='单位净值',
+        title=f"{st.session_state.fund_config[edit_code]['name']} 历史净值走势",
+        labels={'单位净值': '基金单位净值', '日期': '交易日期'}
+    )
+    
+    # 深度定制手机端专属滑屏交互样式
+    fig.update_traces(
+        line=dict(color='#A1C4FD', width=2),
+        hovertemplate="<b>日期:</b> %{x|%Y-%m-%d}<br><b>单位净值:</b> %{y:.4f}<extra></extra>" # 点击或悬浮时精确显示当天数据
+    )
+    
+    fig.update_layout(
+        hovermode="x unified",  # 移动端十字光标绑定X轴，滑动极其丝滑
+        dragmode="zoom",        # 默认鼠标或手指拖拽动作为“矩形局部放大”
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(color="#E0E0E0"),
+        xaxis=dict(showgrid=True, gridcolor='#2A2F35', tickformat='%Y-%m-%d'),
+        yaxis=dict(showgrid=True, gridcolor='#2A2F35'),
+        margin=dict(l=10, r=10, t=40, b=10)
+    )
+    
+    # 渲染图表（启用响应式并隐藏非必要工具栏，使手机端操作更聚焦）
+    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
+    st.caption("💡 手机端操作小贴士：双指张开/捏合即可放大缩小；单指按住顶部工具栏的四向箭头按钮可自由拖拽平移。")
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # 三选项卡数据面板
+    t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
     
     with t_year:
-        df_year = df_raw.groupby('年份').agg(
-            该年有记录天数=('日期', 'count'),
-            期间涨跌波动=('净值增长率', 'sum'),
-            期间最高单位净值=('单位净值', 'max'),
-            期间最低单位净值=('单位净值', 'min')
-        ).reset_index().sort_values(by='年份', ascending=False)
+        df_year = df_raw.groupby('年份').agg(该年记录天数=('日期', 'count'), 期间涨跌波动=('净值增长率', 'sum'), 期间最高单位净值=('单位净值', 'max'), 期间最低单位净值=('单位净值', 'min')).reset_index().sort_values(by='年份', ascending=False)
         df_year['期间涨跌波动'] = df_year['期间涨跌波动'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_year, use_container_width=True, hide_index=True)
         
     with t_month:
-        df_month = df_raw.groupby('月份').agg(
-            月度平均价中枢=('单位净值', 'mean'),
-            当月最高价边界=('单位净值', 'max'),
-            月度累计波动幅=('净值增长率', 'sum')
-        ).reset_index().sort_values(by='月份', ascending=False)
+        df_month = df_raw.groupby('月份').agg(月度平均价中枢=('单位净值', 'mean'), 当月最高价边界=('单位净值', 'max'), 月度累计波动幅=('净值增长率', 'sum')).reset_index().sort_values(by='月份', ascending=False)
         df_month['月度平均价中枢'] = df_month['月度平均价中枢'].map(lambda x: f"{x:.4f}")
         df_month['当月最高价边界'] = df_month['当月最高价边界'].map(lambda x: f"{x:.4f}")
         df_month['月度累计波动幅'] = df_month['月度累计波动幅'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_month, use_container_width=True, hide_index=True)
         
     with t_day:
-        df_display = df_raw.copy()
+        df_display = df_raw.copy().sort_values(by='日期', ascending=False)
         df_display['日期'] = df_display['日期'].dt.strftime('%Y-%m-%d')
         df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
         st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.info("💡 当前该基金本地总库为空。请点击上方的【蚂蚁搬家】按钮，系统将立刻开始无感建立你的第一批专属历史数据库！")
+    st.info("💡 当前该基金本地总库为空。请展开上方的控制台并点击【蚂蚁搬家】按钮，开始建立历史数据库！")
