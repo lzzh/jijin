@@ -461,45 +461,97 @@ def save_local_history(fund_code, data_list):
 
 def move_ants_history(fund_code, page_index=1):
     local_data = load_local_history(fund_code)
+    
+    # 完整请求头，缺任何一项都可能被拦截
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html',
+        'Origin': 'https://fundf10.eastmoney.com',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'X-Requested-With': 'XMLHttpRequest',
+    }
+    
+    timestamp = int(time.time() * 1000)
+    url = (
+        f"https://api.fund.eastmoney.com/f10/lsjz"
+        f"?fundCode={fund_code}&pageIndex={page_index}&pageSize=40&_={timestamp}"
+    )
+    
+    # 优先用 requests（头部处理更可靠），没有就降级到 urllib
+    html = None
+    last_error = ""
+    
     try:
-        timestamp = int(time.time() * 1000)
-        url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize=40&_={timestamp}"
-        req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
-        req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-        with urllib.request.urlopen(req, timeout=5) as response:
-            html = response.read().decode('utf-8')
-        data = json.loads(html)
-        if not data or data.get("Data") is None or "LSJZList" not in data["Data"]:
-            return local_data, 0, "限流"
-        raw_list = data["Data"]["LSJZList"]
-        if not raw_list:
-            return local_data, 0, "无数据"
-        new_count = 0
-        existing_dates = {item['日期'] for item in local_data}
-        for item in raw_list:
-            if not item.get("FSRQ") or not item.get("DWJZ"):
-                continue
-            date_str = item["FSRQ"]
-            if date_str not in existing_dates:
+        import requests as req_lib
+        resp = req_lib.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        html = resp.text
+    except ImportError:
+        # urllib 降级路径
+        try:
+            request_obj = urllib.request.Request(url)
+            for k, v in headers.items():
+                request_obj.add_header(k, v)
+            with urllib.request.urlopen(request_obj, timeout=20) as response:
+                raw = response.read()
+                # 自动处理 gzip 压缩响应
+                import gzip as gz
                 try:
-                    growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
-                except:
-                    growth = 0.0
-                local_data.append({
-                    "日期": date_str,
-                    "单位净值": float(item["DWJZ"]),
-                    "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
-                    "净值增长率": growth
-                })
-                new_count += 1
-        if new_count > 0:
-            local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
-            save_local_history(fund_code, local_data)
-            return local_data, new_count, "成功"
-        return local_data, 0, "无新数据"
+                    html = gz.decompress(raw).decode('utf-8')
+                except Exception:
+                    html = raw.decode('utf-8')
+        except Exception as e:
+            last_error = str(e)
     except Exception as e:
-        return local_data, 0, f"断流({str(e)})"
+        last_error = str(e)
+    
+    if html is None:
+        return local_data, 0, f"网络错误: {last_error}"
+    
+    try:
+        data = json.loads(html)
+    except json.JSONDecodeError as e:
+        # 返回内容不是 JSON，说明被拦截或返回了 HTML 错误页
+        preview = html[:120].replace('\n', ' ')
+        return local_data, 0, f"返回非JSON（可能被拦截）: {preview}"
+    
+    if not data or data.get("Data") is None:
+        return local_data, 0, f"接口返回空 Data，可能触发限流。原始: {str(data)[:80]}"
+    
+    if "LSJZList" not in data["Data"]:
+        return local_data, 0, f"响应缺少 LSJZList 字段，keys={list(data['Data'].keys())}"
+    
+    raw_list = data["Data"]["LSJZList"]
+    if not raw_list:
+        return local_data, 0, "无数据（该页为空）"
+    
+    new_count = 0
+    existing_dates = {item['日期'] for item in local_data}
+    for item in raw_list:
+        if not item.get("FSRQ") or not item.get("DWJZ"):
+            continue
+        date_str = item["FSRQ"]
+        if date_str not in existing_dates:
+            try:
+                growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
+            except (ValueError, TypeError):
+                growth = 0.0
+            local_data.append({
+                "日期": date_str,
+                "单位净值": float(item["DWJZ"]),
+                "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
+                "净值增长率": growth
+            })
+            new_count += 1
+
+    if new_count > 0:
+        local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
+        save_local_history(fund_code, local_data)
+        return local_data, new_count, "成功"
+    return local_data, 0, "无新数据（全部已在本地）"
 
 
 # ══════════════════════════════════════════════
@@ -628,21 +680,27 @@ elif op_mode == "🔄 智能搬家":
         total_steps = len(all_codes) * max_pages
         step_now = 0
         bar = st.progress(0)
-        status = st.empty()
+        log = st.empty()
         total_new = 0
+        log_lines = []
         for code in all_codes:
+            fname = st.session_state.fund_config[code]['name']
             for p in range(1, max_pages + 1):
                 step_now += 1
-                status.markdown(f"正在搬运：**{st.session_state.fund_config[code]['name']}** · 第 {p} 页")
-                _, n, _ = move_ants_history(code, page_index=p)
+                log.markdown(f"⏳ `[{code}]` {fname} · 第 {p}/{max_pages} 页…")
+                _, n, msg = move_ants_history(code, page_index=p)
                 total_new += n
                 bar.progress(step_now / total_steps)
+                icon = "✅" if n > 0 else ("ℹ️" if "无新数据" in msg else "⚠️")
+                log_lines.append(f"{icon} `[{code}]` 第{p}页：{msg}（新增 {n} 条）")
                 time.sleep(random.uniform(1.5, 2.8))
-        status.empty()
+        log.empty()
+        result_text = "\n\n".join(log_lines)
         if total_new > 0:
-            st.success(f"✅ 成功写入 {total_new} 条新数据")
+            st.success(f"✅ 共写入 {total_new} 条新数据")
         else:
-            st.info("📊 无新数据（已是最新），可切换到【批量导入】手动补录")
+            st.warning("未写入新数据，详见下方日志")
+        st.markdown(result_text)
         st.rerun()
 
 elif op_mode == "📋 批量导入":
