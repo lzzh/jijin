@@ -532,7 +532,16 @@ if hist_data:
     melted = df_f.melt('日期', ['单位净值','月均','月高'], '指标', '净值')
     chart = (
         alt.Chart(melted).mark_line(strokeWidth=1.8).encode(
-            x=alt.X('日期:T', title='', axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
+            x=alt.X(
+                '日期:T',
+                title='',
+                axis=alt.Axis(
+                    labelColor='#6E7681',
+                    gridColor='#1F2937',
+                    domainColor='#1F2937',
+                    labelExpr="month(datum.value)==0 ? substring(toString(year(datum.value)),2,4) : toString(month(datum.value)+1)"
+                )
+            ),
             y=alt.Y('净值:Q', title='', scale=alt.Scale(zero=False, padding=15),
                     axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
             color=alt.Color('指标:N',
