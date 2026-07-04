@@ -173,7 +173,6 @@ def fetch_index_valuation(secid):
     """
     多源交叉获取指数估值数据。
     返回 dict: {pe_ttm, pe_dyn, pe_static, pb, div_yield, source_notes}
-    每个字段都有来源标注，供用户判断可信度。
     """
     result = {
         'pe_ttm': None, 'pe_dyn': None, 'pe_static': None,
@@ -183,20 +182,22 @@ def fetch_index_valuation(secid):
     # ── 来源 A：push2 行情接口（字段诊断）──
     raw, err = fetch_index_raw(secid)
     if raw:
-        # 东方财富对指数的字段含义与股票略有差异，f115 才是 PE TTM
         pe_ttm    = _parse_float(raw.get('f115'))
         pe_dyn    = _parse_float(raw.get('f9'))
         pe_static = _parse_float(raw.get('f114'))
         pb        = _parse_float(raw.get('f116'))
         div       = _parse_float(raw.get('f162'))
-
-        result.update({
-            'pe_ttm':    pe_ttm,
-            'pe_dyn':    pe_dyn,
-            'pe_static': pe_static,
-            'pb':        pb,
-            'div_yield': f'{div:.2f}%' if div else None,
-        })
+        # 仅当有效值才记录
+        if pe_ttm is not None and pe_ttm > 0:
+            result['pe_ttm'] = pe_ttm
+        if pe_dyn is not None and pe_dyn > 0:
+            result['pe_dyn'] = pe_dyn
+        if pe_static is not None and pe_static > 0:
+            result['pe_static'] = pe_static
+        if pb is not None and pb > 0 and pb < 1000:  # 过滤异常大值
+            result['pb'] = pb
+        if div is not None and div > 0:
+            result['div_yield'] = f'{div:.2f}%'
         result['notes'].append(
             f'push2[f9={raw.get("f9")} f114={raw.get("f114")} '
             f'f115={raw.get("f115")} f116={raw.get("f116")} f162={raw.get("f162")}]'
@@ -217,24 +218,29 @@ def fetch_index_valuation(secid):
     text2, err2 = http_get(dc_url)
     if text2:
         try:
-            rows = json.loads(text2).get('result', {}).get('data') or []
-            if rows:
+            data2 = json.loads(text2).get('result', {})
+            rows = data2.get('data')
+            if rows and isinstance(rows, list) and len(rows) > 0:
                 row = rows[0]
                 dc_pe_ttm = _parse_float(row.get('PETTM'))
                 dc_pe     = _parse_float(row.get('PE'))
                 dc_pb     = _parse_float(row.get('PB'))
                 dc_div    = _parse_float(row.get('DIVIDENDYIELD'))
-                # 以数据中心结果覆盖（该接口为指数专用，更可信）
-                if dc_pe_ttm: result['pe_ttm']    = dc_pe_ttm
-                if dc_pe:     result['pe_static']  = dc_pe
-                if dc_pb:     result['pb']          = dc_pb
-                if dc_div:    result['div_yield']   = f'{dc_div:.2f}%'
+                # 以数据中心结果覆盖（更可信）
+                if dc_pe_ttm is not None and dc_pe_ttm > 0:
+                    result['pe_ttm'] = dc_pe_ttm
+                if dc_pe is not None and dc_pe > 0:
+                    result['pe_static'] = dc_pe
+                if dc_pb is not None and dc_pb > 0 and dc_pb < 1000:
+                    result['pb'] = dc_pb
+                if dc_div is not None and dc_div > 0:
+                    result['div_yield'] = f'{dc_div:.2f}%'
                 result['notes'].append(
                     f'datacenter[PETTM={row.get("PETTM")} PE={row.get("PE")} '
                     f'PB={row.get("PB")} DIV={row.get("DIVIDENDYIELD")}]'
                 )
             else:
-                result['notes'].append('datacenter 返回空行')
+                result['notes'].append('datacenter 返回空行或无效数据')
         except Exception as e:
             result['notes'].append(f'datacenter 解析失败: {e}')
     else:
@@ -522,55 +528,41 @@ hist_data = load_history(chart_code)
 if hist_data:
     df = pd.DataFrame(hist_data)
     df['日期'] = pd.to_datetime(df['日期'])
-    df.sort_values('日期', inplace=True)  # 确保按日期升序
+    df.sort_values('日期', inplace=True)
 
     # ---- 计算前复权净值（基于累计净值缩放） ----
-    # 后复权 = 累计净值；前复权 = 后复权 * (最新单位净值 / 最新累计净值)
     last_unit = df['单位净值'].iloc[-1]
     last_cum = df['累计净值'].iloc[-1]
     if last_cum > 0:
         scale = last_unit / last_cum
         df['前复权净值'] = df['累计净值'] * scale
     else:
-        # 异常情况，使用单位净值
         df['前复权净值'] = df['单位净值']
 
     # ---- 复权选择 ----
     adj_type = st.selectbox('复权方式', ['不复权', '前复权', '后复权'], index=0, key='adj_type')
 
-    # 计算净值列
     if adj_type == '不复权':
         df['净值'] = df['单位净值']
     elif adj_type == '后复权':
         df['净值'] = df['累计净值']
-    else:  # 前复权
+    else:
         df['净值'] = df['前复权净值']
 
-    # 计算月均、月高（基于净值列）
     df['月份'] = df['日期'].dt.strftime('%Y-%m')
     df_mo = df.groupby('月份').agg(月均=('净值', 'mean'), 月高=('净值', 'max')).reset_index()
     df = df.merge(df_mo, on='月份', how='left')
 
-    # ---- 时间视窗 ----
     tf = st.radio('时间视窗', ['近1月','近3月','近6月','近1年','全部'], horizontal=True, index=4)
     dmap = {'近1月':30,'近3月':90,'近6月':180,'近1年':365}
     df_f = df[df['日期'] >= df['日期'].max()-pd.Timedelta(days=dmap[tf])] if tf in dmap else df
 
-    # ---- 绘制图表 ----
     melted = df_f.melt('日期', ['净值', '月均', '月高'], '指标', 'value')
     chart = (
         alt.Chart(melted).mark_line(strokeWidth=1.8).encode(
-            x=alt.X(
-                '日期:T',
-                title='',
-                axis=alt.Axis(
-                    labelColor='#6E7681',
-                    gridColor='#1F2937',
-                    domainColor='#1F2937',
-                    # 一月显示短年份（后两位），其余月份显示数字月份
-                    labelExpr="month(datum.value)==0 ? substring(toString(year(datum.value)),2,4) : toString(month(datum.value)+1)"
-                )
-            ),
+            x=alt.X('日期:T', title='',
+                    axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937',
+                                  labelExpr="month(datum.value)==0 ? substring(toString(year(datum.value)),2,4) : toString(month(datum.value)+1)")),
             y=alt.Y('value:Q', title='净值', scale=alt.Scale(zero=False, padding=15),
                     axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
             color=alt.Color('指标:N',
@@ -584,14 +576,12 @@ if hist_data:
     )
     st.altair_chart(chart, use_container_width=True)
 
-    # ---- 下方明细表格（保持原样，基于单位净值） ----
-    df_orig = pd.DataFrame(hist_data)  # 原始数据用于表格
+    # ---- 下方明细表格（保持原样） ----
+    df_orig = pd.DataFrame(hist_data)
     df_orig['日期'] = pd.to_datetime(df_orig['日期'])
     df_orig['年份'] = df_orig['日期'].dt.year
     df_orig['月份'] = df_orig['日期'].dt.strftime('%Y-%m')
-    # 添加月均月高（基于单位净值）用于显示，但表格中仍用单位净值
-    # 保持原逻辑不变
-    df_orig['净值增长率'] = df_orig['净值增长率'].astype(float)  # 确保浮点
+    df_orig['净值增长率'] = df_orig['净值增长率'].astype(float)
     t1, t2, t3 = st.tabs(['📅 年度','🌙 月度','📄 逐日'])
     with t1:
         dy = df_orig.groupby('年份').agg(天数=('日期','count'), 波动=('净值增长率','sum'),
@@ -623,7 +613,6 @@ tab_sync, tab_pe, tab_mgmt = st.tabs(['📡 历史净值同步', '📊 指数PE�
 
 # ─── Tab 1: 双向历史同步 ───────────────────────────────
 with tab_sync:
-    # 各基金本地数据概况
     rows = []
     cursors = load_cursors()
     for code, info in cfg.items():
@@ -660,19 +649,15 @@ with tab_sync:
         status = st.empty()
         for i, code in enumerate(codes):
             name = cfg[code]['name']
-            # Phase 1: forward
             status.info(f'[{code}] {name} — 向前追新数据…')
             fn, fl = sync_forward(code, max_pages=int(fwd_pages))
             total_new += fn
             log_store += [f'**[{code}] 向前**'] + fl
-
-            # Phase 2: backward
             status.info(f'[{code}] {name} — 向后挖历史…')
             bn, bl, _ = sync_backward(code, pages=int(back_pages))
             total_new += bn
             log_store += [f'**[{code}] 向后**'] + bl
             bar.progress((i+1)/len(codes))
-
         status.empty()
         bar.empty()
         st.session_state.sync_log = {'total': total_new, 'lines': log_store}
@@ -722,7 +707,6 @@ with tab_pe:
             info = cfg[code]
             st.markdown(f"**[{code}] {info['index_name']}**")
 
-            # 展示双源数据
             cols = st.columns(4)
             def show_val(col, label, v, highlight=False):
                 color = '#F0A500' if highlight and v else '#E6EDF3'
@@ -741,7 +725,6 @@ with tab_pe:
                 for note in val['notes']:
                     st.code(note, language=None)
 
-            # 让用户确认要应用的值
             best_pe = val['pe_ttm'] or val['pe_dyn'] or val['pe_static']
             c1, c2 = st.columns(2)
             with c1:
