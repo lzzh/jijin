@@ -525,17 +525,17 @@ if hist_data:
     df.sort_values('日期', inplace=True)  # 确保按日期升序
 
     # ---- 计算红利再投资前复权 ----
-    # 首先按日期升序，我们已有
-    # 检测除权日：累计净值不变且单位净值下降
+    # 使用累计分红差值（累计净值-单位净值）来检测分红日
+    df['diff'] = df['累计净值'] - df['单位净值']
     df['复权因子_raw'] = 1.0
     for i in range(1, len(df)):
+        prev_diff = df.loc[i-1, 'diff']
+        curr_diff = df.loc[i, 'diff']
         prev_nav = df.loc[i-1, '单位净值']
         curr_nav = df.loc[i, '单位净值']
-        prev_cum = df.loc[i-1, '累计净值']
-        curr_cum = df.loc[i, '累计净值']
-        # 如果累计净值变化很小（视为不变）且单位净值下降，则视为分红除权
-        if abs(curr_cum - prev_cum) < 1e-6 and curr_nav < prev_nav:
-            # 复权因子 *= 前日净值 / 当日净值（即考虑分红再投资）
+        # 若累计分红增加，说明当日发生了分红
+        if curr_diff > prev_diff + 1e-6:
+            # 红利再投资：复权因子乘以（前日净值 / 当日净值）
             df.loc[i, '复权因子_raw'] = df.loc[i-1, '复权因子_raw'] * (prev_nav / curr_nav)
         else:
             df.loc[i, '复权因子_raw'] = df.loc[i-1, '复权因子_raw']
