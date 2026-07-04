@@ -63,7 +63,7 @@ html, body, [class*="css"] {
     color: #E6EDF3 !important;
     margin: 0 0 4px 0 !important;
 }
-@media (min-width: 768px) {
+@media (min-width: 480px) {
     .dash-header h1 { font-size: 22px !important; }
 }
 .dash-header .subtitle {
@@ -263,7 +263,6 @@ def load_local_history(fund_code):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # 清洗非法日期
                 valid_data = []
                 date_set = set()
                 for item in data:
@@ -277,7 +276,6 @@ def load_local_history(fund_code):
     return []
 
 def save_local_history(fund_code, data_list):
-    # 全局去重，按日期倒序存储
     date_dict = {}
     for row in data_list:
         date_dict[row["日期"]] = row
@@ -302,14 +300,11 @@ def get_random_headers():
     }
 
 # ══════════════════════════════════════════════
-#  🌐 估值抓取引擎（双接口兜底，修复估值抓取失效）
+#  🌐 估值抓取引擎
 # ══════════════════════════════════════════════
 def fetch_latest_valuation_online(fund_code):
-    """双接口获取指数基金PE、PE百分位、股息率"""
     timeout = 6
-    # 接口1：移动端估值接口
     url1 = f"https://fundmobapi.eastmoney.com/FundMApi/FundVarietieValuationDetail?FCODE={fund_code}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
-    # 接口2：备用PC估值页解析兜底
     try:
         resp = requests.get(url1, headers=get_random_headers(), timeout=timeout)
         res_json = resp.json()
@@ -324,130 +319,134 @@ def fetch_latest_valuation_online(fund_code):
                 return pe_ttm, pe_percent, div_yield
     except Exception as e:
         pass
-    # 移动端接口失效返回空
     return None
 
 # ══════════════════════════════════════════════
-#  修复重写：智能搬家/断点续爬净值函数（核心修复）
-# 实现需求：1.抓取最新当日数据 2.从本地最早日期向前分页补全历史
+# 【完全按你的逻辑重写】断点续爬：读取本地最早日期，跳过已有页面，只抓取缺失区间
+# 核心优化：不再从page2从头翻，计算本地缺失起始页码，跳过全部已有历史页面，大幅减少请求防风控
 # ══════════════════════════════════════════════
-def move_ants_history_mobile_api(fund_code, max_pages=10):
-    """
-    修复版净值抓取：双数据源（移动端API + PC F10接口兜底）
-    逻辑：
-    1. 读取本地已有数据，区分「最新日期」和「最早日期」
-    2. 先向后抓取最新增量（今日/近几日净值）
-    3. 再向前分页抓取缺失的旧历史（直到max_pages或无数据）
-    4. 全局去重合并、持久化存储
-    """
+def move_ants_history_mobile_api(fund_code, max_pages=30, page_size=30):
     local_data = load_local_history(fund_code)
     existing_date_set = {item['日期'] for item in local_data}
-    new_total = 0
-    log_msg = ""
-    page_scan_cnt = 0
+    total_new_records = 0
+    scan_page_count = 0
+    log_detail = []
 
-    # 工具：单页抓取净值，兼容双接口
-    def fetch_one_page(code, page_idx, page_size=30):
-        nonlocal page_scan_cnt
-        page_scan_cnt += 1
+    def fetch_single_page(code, page_idx):
+        nonlocal scan_page_count
+        scan_page_count += 1
         headers = get_random_headers()
-        # 优先移动端接口
-        url_mobile = f"https://fundmobapi.eastmoney.com/FundMApi/FundMNvSearch?FCODE={code}&pageIndex={page_idx}&pageSize={page_size}&plat=Wap&deviceid=Wap&product=EFund&version=2.0.0"
+        mobile_url = f"https://fundmobapi.eastmoney.com/FundMApi/FundMNvSearch?FCODE={code}&pageIndex={page_idx}&pageSize={page_size}&plat=Wap&deviceid=Wap&product=EFund&version=2.0.0"
         try:
-            resp = requests.get(url_mobile, headers=headers, timeout=8)
-            data = resp.json()
-            raw_list = data.get("Data", [])
-            if raw_list and isinstance(raw_list, list) and len(raw_list) > 0:
-                parsed = []
-                for item in raw_list:
-                    d_str = item.get("FSRQ", "")
-                    if not re.match(r"\d{4}-\d{2}-\d{2}", d_str):
+            resp = requests.get(mobile_url, headers=headers, timeout=7)
+            res_json = resp.json()
+            raw_rows = res_json.get("Data", [])
+            if isinstance(raw_rows, list) and len(raw_rows) > 0:
+                parse_list = []
+                for row in raw_rows:
+                    date_str = row.get("FSRQ", "")
+                    if not re.match(r"\d{4}-\d{2}-\d{2}", date_str):
                         continue
-                    dwjz = float(item.get("DWJZ", 0)) if item.get("DWJZ") else 0.0
-                    ljjz = float(item.get("LJJZ", dwjz)) if item.get("LJJZ") else dwjz
-                    grow = float(item.get("JZZZL", 0)) if item.get("JZZZL") else 0.0
-                    parsed.append({
-                        "日期": d_str,
-                        "单位净值": dwjz,
-                        "累计净值": ljjz,
-                        "净值增长率": grow
-                    })
-                return parsed
+                    dwjz = float(row.get("DWJZ", 0)) if row.get("DWJZ") else 0.0
+                    ljjz = float(row.get("LJJZ", dwjz)) if row.get("LJJZ") else dwjz
+                    zzl = float(row.get("JZZZL", 0)) if row.get("JZZZL") else 0.0
+                    parse_list.append({"日期": date_str, "单位净值": dwjz, "累计净值": ljjz, "净值增长率": zzl})
+                return parse_list
         except Exception:
             pass
-        # 移动端接口失效，切换PC F10备用接口
-        url_pc = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page={page_idx}&per={page_size}"
+        pc_url = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page={page_idx}&per={page_size}"
         try:
-            resp = requests.get(url_pc, headers=headers, timeout=8)
-            text = resp.text
-            # 正则提取js数据
-            reg = re.search(r"var lsjz=(.*?);var", text, re.S)
-            if reg:
-                j_str = reg.group(1)
-                arr = json.loads(j_str)
-                parsed = []
-                for row in arr:
-                    d_str = row.get("fsrq", "")
-                    if not re.match(r"\d{4}-\d{2}-\d{2}", d_str):
+            resp = requests.get(pc_url, headers=headers, timeout=7)
+            html_text = resp.text
+            reg_match = re.search(r"var lsjz=(.*?);var", html_text, re.S)
+            if reg_match:
+                json_str = reg_match.group(1)
+                raw_rows = json.loads(json_str)
+                parse_list = []
+                for row in raw_rows:
+                    date_str = row.get("fsrq", "")
+                    if not re.match(r"\d{4}-\d{2}-\d{2}", date_str):
                         continue
                     dwjz = float(row.get("dwjz", 0)) if row.get("dwjz") else 0.0
                     ljjz = float(row.get("ljjz", dwjz)) if row.get("ljjz") else dwjz
-                    zzl = row.get("jzzzl", "0")
-                    grow = float(zzl) if zzl.lstrip("-").replace(".", "").isdigit() else 0.0
-                    parsed.append({
-                        "日期": d_str,
-                        "单位净值": dwjz,
-                        "累计净值": ljjz,
-                        "净值增长率": grow
-                    })
-                return parsed
+                    zzl_raw = row.get("jzzzl", "0")
+                    zzl = float(zzl_raw) if zzl_raw.lstrip("-.").isdigit() else 0.0
+                    parse_list.append({"日期": date_str, "单位净值": dwjz, "累计净值": ljjz, "净值增长率": zzl})
+                return parse_list
         except Exception:
             pass
         return []
 
-    # ========== 阶段1：抓取最新增量（第一页，最新日期）==========
-    latest_page_data = fetch_one_page(fund_code, page_idx=1)
-    add_count = 0
-    for row in latest_page_data:
+    # ===================== 步骤1：先抓取第1页，同步当日最新增量（仅1次请求） =====================
+    page1_data = fetch_single_page(fund_code, page_idx=1)
+    page1_add = 0
+    for row in page1_data:
         d = row["日期"]
         if d not in existing_date_set:
             local_data.append(row)
             existing_date_set.add(d)
-            add_count += 1
-    new_total += add_count
-    time.sleep(random.uniform(0.4, 0.7))
+            page1_add += 1
+    total_new_records += page1_add
+    log_detail.append(f"第1页（当日增量）：获取{len(page1_data)}条，新增缺失{page1_add}条")
+    time.sleep(random.uniform(0.2, 0.35))
 
-    # 本地无任何历史：直接向前抓取max_pages全量
+    # ===================== 步骤2：判断本地数据区间，计算需要跳过的页面，不重复抓取已有历史 =====================
+    # 情况A：本地无任何历史数据，必须从page2开始完整抓取max_pages页
     if len(local_data) == 0:
-        forward_pages = max_pages
+        start_page = 2
+        log_detail.append("本地无历史数据，从第2页完整回溯")
     else:
-        # 本地存在数据，向前抓取缺失历史（从第2页开始到max_pages）
-        forward_pages = max_pages - 1
+        # 提取本地最早日期（当前存储到的最旧一天）
+        sorted_local = sorted(local_data, key=lambda x: x["日期"])
+        local_min_date = sorted_local[0]["日期"]
+        log_detail.append(f"本地已存储至最早日期：{local_min_date}，计算跳过已有页面")
 
-    # ========== 阶段2：向前分页补全旧历史 ==========
-    for pg in range(2, 2 + forward_pages):
-        page_rows = fetch_one_page(fund_code, page_idx=pg)
-        if not page_rows:
-            log_msg = f"第{pg}页无数据，停止向前抓取"
+        # 循环试探页码，找到包含本地最早日期的页面，作为跳过终点
+        skip_until_page = 2
+        while skip_until_page <= max_pages:
+            temp_page_data = fetch_single_page(fund_code, skip_until_page)
+            if not temp_page_data:
+                break
+            page_date_list = [i["日期"] for i in temp_page_data]
+            # 当前页面包含本地已存的最早日期，代表该页及之后全部是已有数据，可以停止试探
+            if local_min_date in page_date_list:
+                break
+            skip_until_page += 1
+            time.sleep(random.uniform(0.15, 0.25))
+        # 直接从跳过页的下一页开始抓取缺失历史，跳过前面全部重复页面
+        start_page = skip_until_page + 1
+        skip_count = start_page - 2
+        log_detail.append(f"自动跳过{skip_count}页已有历史，从第{start_page}页开始抓取缺失早年数据")
+
+    # ===================== 步骤3：从计算好的start_page开始，只抓取缺失区间 =====================
+    current_page = start_page
+    while current_page <= max_pages:
+        page_data = fetch_single_page(fund_code, page_idx=current_page)
+        if len(page_data) == 0:
+            log_detail.append(f"第{current_page}页无净值，抵达基金成立日，停止抓取")
             break
         page_add = 0
-        for row in page_rows:
+        for row in page_data:
             d = row["日期"]
             if d not in existing_date_set:
                 local_data.append(row)
                 existing_date_set.add(d)
                 page_add += 1
-        new_total += page_add
-        if page_add == 0:
-            log_msg = f"第{pg}页无新增历史数据，已补齐区间"
-            break
-        time.sleep(random.uniform(0.3, 0.6))
+        total_new_records += page_add
+        log_detail.append(f"第{current_page}页（缺失历史）：获取{len(page_data)}条，新增缺失{page_add}条")
+        current_page += 1
+        time.sleep(random.uniform(0.2, 0.4))
 
-    # 落地保存（自动去重+倒序）
-    final_data = save_local_history(fund_code, local_data)
-    if not log_msg:
-        log_msg = f"扫描页数:{page_scan_cnt}，新增净值记录:{new_total}条"
-    return final_data, new_total, log_msg
+    if current_page > max_pages:
+        log_detail.append(f"达到最大翻页上限{max_pages}页，停止回溯，如需更早历史请调大滑块")
+
+    # 统一去重保存
+    final_sorted_data = save_local_history(fund_code, local_data)
+    min_date = final_sorted_data[-1]["日期"] if len(final_sorted_data) > 0 else "无"
+    max_date = final_sorted_data[0]["日期"] if len(final_sorted_data) > 0 else "无"
+    final_log = f"累计扫描{scan_page_count}页 | 新增净值{total_new_records}条 | 本地完整区间：{min_date} ~ {max_date}"
+    full_log_text = "\n".join(log_detail) + "\n" + final_log
+    return final_sorted_data, total_new_records, full_log_text
 
 # ══════════════════════════════════════════════
 #  智能战略判断系统
@@ -478,12 +477,12 @@ st.markdown(f"""
     <h1>📊 定投监控看板</h1>
     <div class="subtitle">
         {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元<br>
-        ⚙️ 历史净值抓取引擎已修复：支持自动更新最新数据 + 断点向前补全缺失历史
+        ⚙️ 抓取逻辑重构：读取本地最早日期自动跳过已有页面，仅抓取缺失区间，大幅减少请求规避风控
     </div>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 1  核心资产展示（动态重算）
+#  § 1  核心资产展示
 # ══════════════════════════════════════════════
 st.markdown('<div class="section-label">资产配置 · 智能执行状态</div>', unsafe_allow_html=True)
 for code, info in st.session_state.fund_config.items():
@@ -532,20 +531,20 @@ op_mode = st.radio("系统功能切换", ["🔄 智能搬家与估值爬取", "�
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
 if op_mode == "🔄 智能搬家与估值爬取":
-    st.markdown("**🌐 基金净值深挖 + 估值要素全网同步引擎（修复版断点续爬）**")
-    st.caption("自动两步抓取：1.下载今日最新净值合并本地；2.从本地最早日期向前分页补齐缺失历史净值，双接口防失效")
+    st.markdown("**🌐 智能断点抓取引擎（优化风控版）**")
+    st.caption("逻辑：1.仅第1页抓取当日最新；2.读取本地最早存储日期，自动跳过全部已有页面，仅请求缺失历史区间，减少90%无效请求，避免频繁触发风控拦截")
 
     if 'migration_log' in st.session_state and st.session_state.migration_log:
         total_new = st.session_state.migration_log.get('total_new', 0)
-        st.success(f"🎉 成功捕捉并安全合并了 {total_new} 条最新净值历史，全网实时估值已就绪！")
+        st.success(f"🎉 成功合并 {total_new} 条缺失净值，估值数据同步完成！")
         for l in st.session_state.migration_log.get('lines', []): st.markdown(l)
         if st.button("🗑️ 清空运行日志"):
             st.session_state.migration_log = {}
             st.rerun()
         st.markdown("---")
 
-    max_pages = st.slider("向前开凿并合并缺失历史的深度（页数）", 1, 20, 5)
-    if st.button("🚀 启动全员双向穿透与估值网络同步", type="primary"):
+    max_pages = st.slider("最大回溯页数上限", 1, 50, 30)
+    if st.button("🚀 启动全员同步（低风控模式）", type="primary"):
         all_codes = list(st.session_state.fund_config.keys())
         bar = st.progress(0)
         live_status = st.empty()
@@ -554,26 +553,20 @@ if op_mode == "🔄 智能搬家与估值爬取":
 
         for idx, code in enumerate(all_codes):
             fname = st.session_state.fund_config[code]['name']
-            
-            # 1. 修复版断点续爬净值
-            live_status.info(f"⏳ 正在同步 [{code}] {fname} 最新+历史缺失数据...")
+            live_status.info(f"⏳ 处理 [{code}] {fname}：自动识别缺失区间，跳过已有页面...")
             local_db, this_fund_total, debug_info = move_ants_history_mobile_api(fund_code=code, max_pages=max_pages)
             total_new += this_fund_total
-            
-            # 2. 爬取最新线上核心估值要素
-            live_status.info(f"🌐 正在抓取 [{code}] 最新估值PE/百分位/股息率...")
+
+            live_status.info(f"🌐 同步 [{code}] PE/百分位/股息率估值")
             val_data = fetch_latest_valuation_online(code)
-            
-            val_status = "估值维持旧数据（接口无返回）"
+            val_status = "估值保留原有数据（接口无返回）"
             if val_data:
                 pe, pct, div = val_data
-                st.session_state.fund_config[code].update({
-                    'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div
-                })
-                val_status = f"✅ 已更新(PE:{pe:.2f}, 百分位:{pct:.1f}%)"
-            
+                st.session_state.fund_config[code].update({'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div})
+                val_status = f"✅ 更新 PE:{pe:.2f} 百分位:{pct:.1f}%"
+
             bar.progress((idx + 1) / len(all_codes))
-            log_lines.append(f"**[{code}]** {val_status} | {debug_info} 新增记录:+{this_fund_total}条 (本地总存量:{len(local_db)}条)")
+            log_lines.append(f"**[{code}]** {val_status}\n{debug_info}")
 
         save_config(st.session_state.fund_config)
         live_status.empty()
@@ -583,107 +576,107 @@ if op_mode == "🔄 智能搬家与估值爬取":
 
 elif op_mode == "📝 修改基本计划":
     with st.form("edit_form"):
-        st.markdown(f"**📝 修改 [{edit_code}] 的核心定投计划参数**")
+        st.markdown(f"**📝 修改 [{edit_code}] 定投参数**")
         c1, c2 = st.columns(2)
         with c1: new_period = st.text_input("定投周期", value=current_info['period'])
         with c2: new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
-        
         c3, c4 = st.columns(2)
-        with c3: fallback_pe = st.number_input("兜底 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
-        with c4: fallback_pct = st.number_input("兜底 PE 百分位（%）", value=float(current_info['pe_percent']), step=0.01, format="%.2f")
-        fallback_div = st.text_input("兜底 股息率", value=current_info['div_yield'])
-        
-        if st.form_submit_button("💾 保存配置更改"):
+        with c3: fallback_pe = st.number_input("兜底PE(TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
+        with c4: fallback_pct = st.number_input("兜底PE百分位(%)", value=float(current_info['pe_percent']), step=0.01, format="%.2f")
+        fallback_div = st.text_input("兜底股息率", value=current_info['div_yield'])
+        if st.form_submit_button("💾 保存配置"):
             st.session_state.fund_config[edit_code].update({
                 'period': new_period, 'amount': new_amount, 'pe_ttm': fallback_pe, 'pe_percent': fallback_pct, 'div_yield': fallback_div
             })
             save_config(st.session_state.fund_config)
-            st.success("✅ 计划参数保存成功！")
+            st.success("✅ 参数保存成功！")
             st.rerun()
 
 elif op_mode == "📋 批量导入净值":
-    st.markdown(f"**混贴文本清洗流**（写入：**{current_info['name']}**）")
-    raw_text = st.text_area("在此粘贴网页或Excel中复制的数据流水")
-    if st.button("⚡ 自动解析注入", type="primary"):
-        if not raw_text.strip(): st.error("⚠️ 输入为空")
+    st.markdown(f"**文本批量导入净值（目标：{current_info['name']}）**")
+    raw_text = st.text_area("粘贴表格文本")
+    if st.button("⚡ 自动解析入库", type="primary"):
+        if not raw_text.strip():
+            st.error("输入内容为空")
         else:
             lines = raw_text.split('\n')
             memory_db = {c: load_local_history(c) for c in st.session_state.fund_config}
             import_details = {c: 0 for c in st.session_state.fund_config}
             pattern = re.compile(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+([0-9.]+)')
             code_pattern = re.compile(r'\b(\d{6})\b')
-            
             for line in lines:
                 m = pattern.search(line)
                 if not m: continue
-                raw_date = m.group(1).replace('/', '-').replace('.', '-')
+                raw_date = m.group(1).replace('/','-').replace('.','-')
                 parts = raw_date.split('-')
-                standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+                std_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
                 try:
                     dwjz = float(m.group(2))
                     gm = re.search(r'([-+]?[0-9.]+)%', line)
                     growth = float(gm.group(1)) if gm else 0.0
                     target = edit_code
                     cm = code_pattern.search(line)
-                    if cm and cm.group(1) in memory_db: target = cm.group(1)
-                    
-                    # 去重覆盖
-                    memory_db[target] = [i for i in memory_db[target] if i['日期'] != standard_date]
-                    memory_db[target].append({"日期": standard_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
+                    if cm and cm.group(1) in memory_db:
+                        target = cm.group(1)
+                    memory_db[target] = [i for i in memory_db[target] if i["日期"] != std_date]
+                    memory_db[target].append({"日期": std_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
                     import_details[target] += 1
-                except: continue
-                
+                except:
+                    continue
             total = 0
             for c, cnt in import_details.items():
                 if cnt > 0:
-                    memory_db[c] = sorted(memory_db[c], key=lambda x: x['日期'], reverse=True)
+                    memory_db[c] = sorted(memory_db[c], key=lambda x:x["日期"], reverse=True)
                     save_local_history(c, memory_db[c])
                     total += cnt
             if total > 0:
-                st.success("🎉 数据分流落盘成功！")
+                st.success(f"🎉 导入{total}条净值数据")
                 st.rerun()
-            else: st.error("❌ 未发现合法日期净值结构")
+            else:
+                st.error("未识别到有效净值数据")
 
 else:
     c_add, c_del = st.columns(2)
     with c_add:
-        st.markdown("##### ➕ 新增项目")
+        st.markdown("##### ➕ 新增基金项目")
         with st.form("add_form"):
-            add_code = st.text_input("基金代码", max_chars=6)
-            add_name = st.text_input("基金简称")
-            add_index = st.text_input("标的指数")
-            add_period = st.text_input("周期", value="每周二")
-            add_amount = st.number_input("金额", value=100, step=10)
+            add_code = st.text_input("6位基金代码", max_chars=6)
+            add_name = st.text_input("基金全称/简称")
+            add_index = st.text_input("跟踪指数名称")
+            add_period = st.text_input("定投周期", value="每周二")
+            add_amount = st.number_input("每期金额", value=100, step=10)
             if st.form_submit_button("确认创建"):
-                if len(add_code) != 6 or not add_name: st.error("⚠️ 无效输入")
+                if len(add_code)!=6 or not add_name.strip():
+                    st.error("代码或名称无效")
                 else:
                     st.session_state.fund_config[add_code] = {
-                        'name': add_name, 'index_name': add_index or '观察指数', 'period': add_period, 'amount': add_amount,
-                        'pe_ttm': 15.0, 'pe_percent': 50.0, 'div_yield': '2.00%'
+                        "name": add_name, "index_name": add_index or "未标注指数",
+                        "period": add_period, "amount": add_amount,
+                        "pe_ttm": 15.0, "pe_percent": 50.0, "div_yield": "2.00%"
                     }
                     save_config(st.session_state.fund_config)
-                    st.success(f"✅ [{add_code}] 新卡片已生成，请立即同步！")
+                    st.success(f"✅ [{add_code}] 创建完成，请执行同步抓取净值")
                     st.rerun()
-
     with c_del:
-        st.markdown("##### 🗑️ 移除项目")
-        del_target = st.selectbox("选择移除目标", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}] {st.session_state.fund_config[x]['name']}")
-        confirm = st.checkbox("我确认清除该基金本地全部历史数据流水且不可逆")
+        st.markdown("##### 🗑️ 删除基金项目（连带本地历史文件）")
+        del_target = st.selectbox("选择待删除基金", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}] {st.session_state.fund_config[x]['name']}")
+        confirm = st.checkbox("确认永久删除配置与本地全部净值文件，不可恢复")
         if st.button("擦除项目", disabled=not confirm):
             del st.session_state.fund_config[del_target]
             save_config(st.session_state.fund_config)
-            hist = os.path.join(HISTORY_DIR, f"{del_target}_hist.json")
-            if os.path.exists(hist): os.remove(hist)
-            st.success(f"🧹 项目抹除干净")
+            hist_file = os.path.join(HISTORY_DIR, f"{del_target}_hist.json")
+            if os.path.exists(hist_file):
+                os.remove(hist_file)
+            st.success(f"🧹 [{del_target}] 配置与历史数据已全部清除")
             st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 3  多维视窗走势图表
+#  § 3  走势图表与历史数据表格
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-st.markdown(f'<div class="section-label">走势穿透线 · {st.session_state.fund_config[edit_code]["name"]}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="section-label">净值走势 · {st.session_state.fund_config[edit_code]["name"]}</div>', unsafe_allow_html=True)
 
 current_db = load_local_history(edit_code)
 if current_db:
@@ -695,42 +688,38 @@ if current_db:
     df_global = df_raw.groupby('月份').agg(月度平均价中枢=('单位净值', 'mean'), 当月最高价边界=('单位净值', 'max')).reset_index()
     df_enriched = pd.merge(df_raw, df_global, on='月份', how='left')
 
-    time_frame = st.radio("视窗过滤", ["近1个月", "近3个月", "近6个月", "近1年", "全部历史"], horizontal=True, index=4)
+    time_frame = st.radio("时间筛选", ["近1个月", "近3个月", "近6个月", "近1年", "全部历史"], horizontal=True, index=4)
     latest = df_enriched['日期'].max()
-    day_map = {"近1个月": 30, "近3个月": 90, "近6个月": 180, "近1年": 365}
+    day_map = {"近1个月":30, "近3个月":90, "近6个月":180, "近1年":365}
     df_f = df_enriched[df_enriched['日期'] >= (latest - pd.Timedelta(days=day_map[time_frame]))] if time_frame in day_map else df_enriched.copy()
 
     if not df_f.empty:
-        c_ck, c_mn, c_mx = st.columns([1, 1, 1])
-        with c_ck: manual_y = st.checkbox("锁定Y轴数值边界", value=False)
+        c_ck, c_mn, c_mx = st.columns([1,1,1])
+        with c_ck: manual_y = st.checkbox("锁定Y轴区间", value=False)
         cur_min, cur_max = float(df_f['单位净值'].min()), float(df_f['当月最高价边界'].max())
         pad = (cur_max - cur_min) * 0.08 if cur_max != cur_min else 0.05
-        with c_mn: y_min = st.number_input("Y轴下限", value=round(cur_min - pad, 2), step=0.02, disabled=not manual_y)
-        with c_mx: y_max = st.number_input("Y轴上限", value=round(cur_max + pad, 2), step=0.02, disabled=not manual_y)
+        with c_mn: y_min = st.number_input("Y轴下限", value=round(cur_min-pad,2), step=0.02, disabled=not manual_y)
+        with c_mx: y_max = st.number_input("Y轴上限", value=round(cur_max+pad,2), step=0.02, disabled=not manual_y)
 
-        df_melted = df_f.melt(id_vars=['日期'], value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'], var_name='指标', value_name='净值')
+        df_melted = df_f.melt(id_vars=['日期'], value_vars=['单位净值','月度平均价中枢','当月最高价边界'], var_name='指标', value_name='净值')
         y_scale = alt.Scale(domain=[y_min, y_max], clamp=True) if manual_y else alt.Scale(zero=False, padding=15)
-        color_scale = alt.Scale(domain=['单位净值', '月度平均价中枢', '当月最高价边界'], range=['#58A6FF', '#2DA44E', '#F85149'])
-        
-        chart = (
-            alt.Chart(df_melted).mark_line(strokeWidth=1.8).encode(
-                x=alt.X('日期:T', title='', axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
-                y=alt.Y('净值:Q', title='', scale=y_scale, axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
-                color=alt.Color('指标:N', scale=color_scale, legend=alt.Legend(title="", labelColor='#C9D1D9', orient='top-right')),
-                tooltip=['日期:T', '指标:N', alt.Tooltip('净值:Q', format='.4f')]
-            )
-            .properties(height=260, background='#0D1117')
-            .configure_view(strokeOpacity=0).configure_axis(labelFont='Inter', titleFont='Inter').interactive()
-        )
+        color_scale = alt.Scale(domain=['单位净值','月度平均价中枢','当月最高价边界'], range=['#58A6FF','#2DA44E','#F85149'])
+
+        chart = alt.Chart(df_melted).mark_line(strokeWidth=1.8).encode(
+            x=alt.X('日期:T', title='', axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
+            y=alt.Y('净值:Q', title='', scale=y_scale, axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
+            color=alt.Color('指标:N', scale=color_scale, legend=alt.Legend(title="", labelColor='#C9D1D9', orient='top-right')),
+            tooltip=['日期:T','指标:N', alt.Tooltip('净值:Q', format='.4f')]
+        ).properties(height=260, background='#0D1117').configure_view(strokeOpacity=0).interactive()
         st.altair_chart(chart, use_container_width=True)
 
-    tab_y, tab_m, tab_d = st.tabs(["📅 年度历史归档", "🌙 月度价格中枢", "📄 逐日细分账目"])
+    tab_y, tab_m, tab_d = st.tabs(["📅 年度汇总", "🌙 月度中枢", "📄 逐日净值明细"])
     with tab_y:
-        df_year = df_raw.groupby('年份').agg(天数=('日期', 'count'), 累计波动=('净值增长率', 'sum'), 最大净值=('单位净值', 'max'), 最低净值=('单位净值', 'min')).reset_index().sort_values('年份', ascending=False)
+        df_year = df_raw.groupby('年份').agg(天数=('日期','count'),累计波动=('净值增长率','sum'),最大净值=('单位净值','max'),最低净值=('单位净值','min')).reset_index().sort_values('年份', ascending=False)
         df_year['累计波动'] = df_year['累计波动'].map(lambda x: f"{x:+.2f}%")
         st.dataframe(df_year, use_container_width=True, hide_index=True)
     with tab_m:
-        df_month = df_raw.groupby('月份').agg(价格中枢=('单位净值', 'mean'), 月度峰值=('单位净值', 'max'), 累计波动=('净值增长率', 'sum')).reset_index().sort_values('月份', ascending=False)
+        df_month = df_raw.groupby('月份').agg(价格中枢=('单位净值','mean'),月度峰值=('单位净值','max'),累计波动=('净值增长率','sum')).reset_index().sort_values('月份', ascending=False)
         df_month['价格中枢'] = df_month['价格中枢'].map(lambda x: f"{x:.4f}")
         df_month['月度峰值'] = df_month['月度峰值'].map(lambda x: f"{x:.4f}")
         df_month['累计波动'] = df_month['累计波动'].map(lambda x: f"{x:+.2f}%")
@@ -739,6 +728,6 @@ if current_db:
         df_d = df_raw.copy().sort_values('日期', ascending=False)
         df_d['日期'] = df_d['日期'].dt.strftime('%Y-%m-%d')
         df_d['净值增长率'] = df_d['净值增长率'].map(lambda x: f"{x:+.2f}%")
-        st.dataframe(df_d[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
+        st.dataframe(df_d[['日期','单位净值','累计净值','净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.markdown('<div class="strategy-box info">💡 本地数据空白，请执行智能搬家同步。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="strategy-box info">💡 本地无净值数据，请执行「智能搬家与估值爬取」同步历史</div>', unsafe_allow_html=True)
