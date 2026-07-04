@@ -524,25 +524,16 @@ if hist_data:
     df['日期'] = pd.to_datetime(df['日期'])
     df.sort_values('日期', inplace=True)  # 确保按日期升序
 
-    # ---- 计算红利再投资前复权 ----
-    # 使用累计分红差值（累计净值-单位净值）来检测分红日
-    df['diff'] = df['累计净值'] - df['单位净值']
-    df['复权因子_raw'] = 1.0
-    for i in range(1, len(df)):
-        prev_diff = df.loc[i-1, 'diff']
-        curr_diff = df.loc[i, 'diff']
-        prev_nav = df.loc[i-1, '单位净值']
-        curr_nav = df.loc[i, '单位净值']
-        # 若累计分红增加，说明当日发生了分红
-        if curr_diff > prev_diff + 1e-6:
-            # 红利再投资：复权因子乘以（前日净值 / 当日净值）
-            df.loc[i, '复权因子_raw'] = df.loc[i-1, '复权因子_raw'] * (prev_nav / curr_nav)
-        else:
-            df.loc[i, '复权因子_raw'] = df.loc[i-1, '复权因子_raw']
-    # 归一化，使最新复权因子为1
-    last_factor = df.loc[len(df)-1, '复权因子_raw']
-    df['复权因子_norm'] = df['复权因子_raw'] / last_factor
-    df['前复权净值'] = df['单位净值'] * df['复权因子_norm']
+    # ---- 计算前复权净值（基于累计净值缩放） ----
+    # 后复权 = 累计净值；前复权 = 后复权 * (最新单位净值 / 最新累计净值)
+    last_unit = df['单位净值'].iloc[-1]
+    last_cum = df['累计净值'].iloc[-1]
+    if last_cum > 0:
+        scale = last_unit / last_cum
+        df['前复权净值'] = df['累计净值'] * scale
+    else:
+        # 异常情况，使用单位净值
+        df['前复权净值'] = df['单位净值']
 
     # ---- 复权选择 ----
     adj_type = st.selectbox('复权方式', ['不复权', '前复权', '后复权'], index=0, key='adj_type')
