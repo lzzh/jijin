@@ -434,8 +434,9 @@ div[data-testid="stNumberInput"]>div>div>input,
 div[data-testid="stTextArea"]>div>textarea{background:#161B22!important;border-color:#21262D!important;color:#C9D1D9!important;border-radius:8px!important;font-size:16px!important}
 div[data-testid="stButton"]>button{background:#161B22!important;border:1px solid #21262D!important;color:#C9D1D9!important;border-radius:8px!important;min-height:44px!important;font-size:14px!important;width:100%!important}
 div[data-testid="stButton"]>button[kind="primary"]{background:linear-gradient(135deg,#1A3A5C,#0D2A45)!important;border-color:#58A6FF!important;color:#58A6FF!important}
-div[data-testid="stRadio"]>div{gap:6px!important;flex-wrap:wrap!important}
-div[data-testid="stRadio"] label{background:#161B22!important;border:1px solid #21262D!important;border-radius:8px!important;padding:8px 12px!important;min-height:40px!important;font-size:13px!important;display:flex!important;align-items:center!important}
+/* 时间视窗 radio 按钮紧凑排版 */
+div[data-testid="stRadio"]>div{gap:4px!important;flex-wrap:wrap!important}
+div[data-testid="stRadio"] label{background:#161B22!important;border:1px solid #21262D!important;border-radius:8px!important;padding:6px 10px!important;min-height:32px!important;font-size:12px!important;display:flex!important;align-items:center!important;margin:0!important}
 div[data-testid="stRadio"] label:has(input:checked){border-color:#F0A500!important;background:#1F1A0A!important}
 button[data-baseweb="tab"]{background:transparent!important;color:#6E7681!important;border-bottom:2px solid transparent!important;border-radius:0!important;font-size:12px!important;min-height:40px!important}
 button[data-baseweb="tab"][aria-selected="true"]{color:#F0A500!important;border-bottom-color:#F0A500!important}
@@ -521,15 +522,36 @@ hist_data = load_history(chart_code)
 if hist_data:
     df = pd.DataFrame(hist_data)
     df['日期'] = pd.to_datetime(df['日期'])
+    df.sort_values('日期', inplace=True)  # 确保按日期升序
+
+    # ---- 复权选择 ----
+    adj_type = st.selectbox('复权方式', ['不复权', '前复权', '后复权'], index=0, key='adj_type')
+
+    # 计算净值列
+    if adj_type == '不复权':
+        df['净值'] = df['单位净值']
+    elif adj_type == '后复权':
+        df['净值'] = df['累计净值']
+    else:  # 前复权
+        # 计算复权因子 = 累计净值 / 单位净值
+        df['复权因子'] = df['累计净值'] / df['单位净值']
+        # 取最新日期的复权因子作为基准
+        base_factor = df.loc[df['日期'].idxmax(), '复权因子']
+        # 前复权净值 = 单位净值 * (基准复权因子 / 历史复权因子)
+        df['净值'] = df['单位净值'] * (base_factor / df['复权因子'])
+
+    # 计算月均、月高（基于净值列）
     df['月份'] = df['日期'].dt.strftime('%Y-%m')
-    df_mo = df.groupby('月份').agg(月均=('单位净值','mean'), 月高=('单位净值','max')).reset_index()
+    df_mo = df.groupby('月份').agg(月均=('净值', 'mean'), 月高=('净值', 'max')).reset_index()
     df = df.merge(df_mo, on='月份', how='left')
 
+    # ---- 时间视窗 ----
     tf = st.radio('时间视窗', ['近1月','近3月','近6月','近1年','全部'], horizontal=True, index=4)
     dmap = {'近1月':30,'近3月':90,'近6月':180,'近1年':365}
     df_f = df[df['日期'] >= df['日期'].max()-pd.Timedelta(days=dmap[tf])] if tf in dmap else df
 
-    melted = df_f.melt('日期', ['单位净值','月均','月高'], '指标', '净值')
+    # ---- 绘制图表 ----
+    melted = df_f.melt('日期', ['净值', '月均', '月高'], '指标', '净值')
     chart = (
         alt.Chart(melted).mark_line(strokeWidth=1.8).encode(
             x=alt.X(
@@ -539,13 +561,14 @@ if hist_data:
                     labelColor='#6E7681',
                     gridColor='#1F2937',
                     domainColor='#1F2937',
+                    # 一月显示短年份（后两位），其余月份显示数字月份
                     labelExpr="month(datum.value)==0 ? substring(toString(year(datum.value)),2,4) : toString(month(datum.value)+1)"
                 )
             ),
             y=alt.Y('净值:Q', title='', scale=alt.Scale(zero=False, padding=15),
                     axis=alt.Axis(labelColor='#6E7681', gridColor='#1F2937', domainColor='#1F2937')),
             color=alt.Color('指标:N',
-                scale=alt.Scale(domain=['单位净值','月均','月高'], range=['#58A6FF','#2DA44E','#F85149']),
+                scale=alt.Scale(domain=['净值','月均','月高'], range=['#58A6FF','#2DA44E','#F85149']),
                 legend=alt.Legend(title='', labelColor='#C9D1D9', orient='top-right')),
             tooltip=['日期:T','指标:N', alt.Tooltip('净值:Q', format='.4f')]
         ).properties(height=260, background='#0D1117')
@@ -555,22 +578,29 @@ if hist_data:
     )
     st.altair_chart(chart, use_container_width=True)
 
-    df['年份'] = df['日期'].dt.year
+    # ---- 下方明细表格（保持原样，基于单位净值） ----
+    df_orig = pd.DataFrame(hist_data)  # 原始数据用于表格
+    df_orig['日期'] = pd.to_datetime(df_orig['日期'])
+    df_orig['年份'] = df_orig['日期'].dt.year
+    df_orig['月份'] = df_orig['日期'].dt.strftime('%Y-%m')
+    # 添加月均月高（基于单位净值）用于显示，但表格中仍用单位净值
+    # 保持原逻辑不变
+    df_orig['净值增长率'] = df_orig['净值增长率'].astype(float)  # 确保浮点
     t1, t2, t3 = st.tabs(['📅 年度','🌙 月度','📄 逐日'])
     with t1:
-        dy = df.groupby('年份').agg(天数=('日期','count'), 波动=('净值增长率','sum'),
+        dy = df_orig.groupby('年份').agg(天数=('日期','count'), 波动=('净值增长率','sum'),
                                      最高=('单位净值','max'), 最低=('单位净值','min')).reset_index().sort_values('年份', ascending=False)
         dy['波动'] = dy['波动'].map(lambda x: f'{x:+.2f}%')
         st.dataframe(dy, use_container_width=True, hide_index=True)
     with t2:
-        dm = df.groupby('月份').agg(月均=('单位净值','mean'), 月高=('单位净值','max'),
+        dm = df_orig.groupby('月份').agg(月均=('单位净值','mean'), 月高=('单位净值','max'),
                                      波动=('净值增长率','sum')).reset_index().sort_values('月份', ascending=False)
         dm['月均'] = dm['月均'].map(lambda x: f'{x:.4f}')
         dm['月高'] = dm['月高'].map(lambda x: f'{x:.4f}')
         dm['波动'] = dm['波动'].map(lambda x: f'{x:+.2f}%')
         st.dataframe(dm, use_container_width=True, hide_index=True)
     with t3:
-        dd = df.copy().sort_values('日期', ascending=False)
+        dd = df_orig.copy().sort_values('日期', ascending=False)
         dd['日期'] = dd['日期'].dt.strftime('%Y-%m-%d')
         dd['净值增长率'] = dd['净值增长率'].map(lambda x: f'{x:+.2f}%')
         st.dataframe(dd[['日期','单位净值','累计净值','净值增长率']], use_container_width=True, hide_index=True)
