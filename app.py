@@ -443,8 +443,17 @@ if 'global_sheet_select' not in st.session_state:
 #  § 2  多维视窗走势图表
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-edit_code = st.session_state.global_sheet_select
-st.markdown(f'<div class="section-label">走势穿透线 · {st.session_state.fund_config[edit_code]["name"]}</div>', unsafe_allow_html=True)
+
+# 🔥 核心修正点：将视窗控制下拉框精准放置在图表上方
+st.markdown('<div class="section-label">走势穿透线 · 核心视窗控制</div>', unsafe_allow_html=True)
+edit_code = st.selectbox(
+    "请选择当前要穿透观察的基金资产：", 
+    list(st.session_state.fund_config.keys()), 
+    index=list(st.session_state.fund_config.keys()).index(st.session_state.global_sheet_select), 
+    format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", 
+    key="global_chart_selector"
+)
+st.session_state.global_sheet_select = edit_code
 
 current_db = load_local_history(edit_code)
 if current_db:
@@ -505,7 +514,7 @@ else:
     st.markdown('<div class="strategy-box info">💡 本地数据空白，请在下方控制台执行“联网同步”或使用“混贴导入”。</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 3  数据仓储与控制工作台（已移动到页面最下方）
+#  § 3  数据仓储与控制工作台（纯净数据维护版）
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-label">数据仓储与控制工作台</div>', unsafe_allow_html=True)
@@ -552,20 +561,9 @@ with tab_sync:
     st.markdown("<hr style='margin:20px 0; border-color:#21262D;'>", unsafe_allow_html=True)
     
     st.markdown("##### 📋 第二步：混贴文本批量导入历史净值流水")
-    # 允许在此处切换目标基金，并通过 Session State 强制上方走势图表保持精确的联动同步
-    edit_code = st.selectbox(
-        "选择要导入流水或查看走势的目标基金", 
-        list(st.session_state.fund_config.keys()), 
-        index=list(st.session_state.fund_config.keys()).index(st.session_state.global_sheet_select), 
-        format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", 
-        key="sheet_select"
-    )
-    if edit_code != st.session_state.global_sheet_select:
-        st.session_state.global_sheet_select = edit_code
-        st.rerun()
-        
+    # 此处的导入目标默认锁定为上方用户正在查看的基金，避免混乱
     current_info = st.session_state.fund_config[edit_code]
-    st.caption(f"不含6位基金代码的数据行将默认写入当前选中的：**{current_info['name']}**")
+    st.caption(f"当前混贴数据默认直接写入穿透目标：**[{edit_code}] {current_info['name']}**")
     
     with st.form("integrated_sheet_form"):
         raw_text = st.text_area("在此直接粘贴网页或 Excel 复制的净值表格数据", height=140)
@@ -611,7 +609,7 @@ with tab_sync:
             else:
                 st.warning("⚠️ 粘贴板文本为空")
 
-# ➡️ Tab 2: 资产卡片及定投计划维护（删除手动微调资产属性表单，仅保留卡片本身基础计划和增减管理）
+# ➡️ Tab 2: 资产卡片及定投计划维护
 with tab_manage:
     st.markdown("##### ⚙️ 单项定投计划微调")
     manage_code = st.selectbox("选择维护项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", key="plan_manage_select")
