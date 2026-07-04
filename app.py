@@ -471,7 +471,6 @@ if current_db:
 
     if not df_f.empty:
         df_melted = df_f.melt(id_vars=['日期'], value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'], var_name='指标', value_name='净值')
-        # 💡 精确改动点：去掉手动 Y 轴边界逻辑，改为更优的纯自适应缩放机制
         y_scale = alt.Scale(zero=False, padding=15)
         color_scale = alt.Scale(domain=['单位净值', '月度平均价中枢', '当月最高价边界'], range=['#58A6FF', '#2DA44E', '#F85149'])
         
@@ -507,7 +506,7 @@ else:
     st.markdown('<div class="strategy-box info">💡 本地数据空白，请在下方控制台执行“联网同步”或使用“混贴导入”。</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 3  数据仓储与控制工作台（纯净数据维护版）
+#  § 3  数据仓储与控制工作台
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="section-label">数据仓储与控制工作台</div>', unsafe_allow_html=True)
@@ -529,6 +528,7 @@ with tab_sync:
             bar = st.progress(0)
             live_status = st.empty()
             total_new = 0
+            summary_details = []
 
             for idx, code in enumerate(all_codes):
                 fname = st.session_state.fund_config[code]['name']
@@ -536,20 +536,36 @@ with tab_sync:
                 
                 local_db, new_front_count = move_ants_front_latest(code)
                 _, new_deep_count, _ = move_ants_deep_history_v2(fund_code=code, max_pages=max_pages)
-                total_new += (new_front_count + new_deep_count)
+                fund_new_rows = new_front_count + new_deep_count
+                total_new += fund_new_rows
                 
                 val_data = fetch_latest_valuation_online(code)
+                pe_str = "保持原样"
                 if val_data:
                     pe, pct, div = val_data
                     st.session_state.fund_config[code].update({'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div})
+                    pe_str = f"PE百分位 {pct:.2f}%"
                 
+                summary_details.append(f"• **[{code}] {fname}**：补齐流水 `{fund_new_rows}` 条 | 最新估值：`{pe_str}`")
                 bar.progress((idx + 1) / len(all_codes))
                 
             save_config(st.session_state.fund_config)
             live_status.empty()
             bar.empty()
-            st.success(f"🎉 自动同步完成！共补齐 {total_new} 条最新流水，指标已全部对齐。")
-            st.rerun()
+            
+            # 报告保留并显示，取消掉最后的 rerun
+            st.success(f"🎉 **全网自动同步大获全胜！**")
+            st.markdown(f"""
+            <div style="background-color: #161B22; border: 1px solid #2DA44E; border-radius: 8px; padding: 15px; margin-top: 10px;">
+                <b style="color: #2DA44E; font-size: 14px;">📊 自动化对齐报告：</b><br>
+                <span style="font-size: 13px; color: #C9D1D9;">
+                    本次全量穿透共补齐 <b>{total_new}</b> 条历史流水线，最新指标已全部对齐。<br><br>
+                    {"<br>".join(summary_details)}
+                </span>
+                <br><br>
+                <p style="font-size: 11px; color: #8B949E; margin: 0;">💡 提示：此时上方卡片和图表已在后台更新。如需立刻刷新上方图表视窗，手动点击任意切换按钮或刷新页面即可。</p>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown("<hr style='margin:20px 0; border-color:#21262D;'>", unsafe_allow_html=True)
     
