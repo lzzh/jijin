@@ -444,7 +444,6 @@ if 'global_sheet_select' not in st.session_state:
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-# 🔥 核心修正点：将视窗控制下拉框精准放置在图表上方
 st.markdown('<div class="section-label">走势穿透线 · 核心视窗控制</div>', unsafe_allow_html=True)
 edit_code = st.selectbox(
     "请选择当前要穿透观察的基金资产：", 
@@ -471,15 +470,9 @@ if current_db:
     df_f = df_enriched[df_enriched['日期'] >= (latest - pd.Timedelta(days=day_map[time_frame]))] if time_frame in day_map else df_enriched.copy()
 
     if not df_f.empty:
-        c_ck, c_mn, c_mx = st.columns([1, 1, 1])
-        with c_ck: manual_y = st.checkbox("锁定Y轴数值边界", value=False)
-        cur_min, cur_max = float(df_f['单位净值'].min()), float(df_f['当月最高价边界'].max())
-        pad = (cur_max - cur_min) * 0.08 if cur_max != cur_min else 0.05
-        with c_mn: y_min = st.number_input("Y轴下限", value=round(cur_min - pad, 2), step=0.02, disabled=not manual_y)
-        with c_mx: y_max = st.number_input("Y轴上限", value=round(cur_max + pad, 2), step=0.02, disabled=not manual_y)
-
         df_melted = df_f.melt(id_vars=['日期'], value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'], var_name='指标', value_name='净值')
-        y_scale = alt.Scale(domain=[y_min, y_max], clamp=True) if manual_y else alt.Scale(zero=False, padding=15)
+        # 💡 精确改动点：去掉手动 Y 轴边界逻辑，改为更优的纯自适应缩放机制
+        y_scale = alt.Scale(zero=False, padding=15)
         color_scale = alt.Scale(domain=['单位净值', '月度平均价中枢', '当月最高价边界'], range=['#58A6FF', '#2DA44E', '#F85149'])
         
         chart = (
@@ -561,7 +554,6 @@ with tab_sync:
     st.markdown("<hr style='margin:20px 0; border-color:#21262D;'>", unsafe_allow_html=True)
     
     st.markdown("##### 📋 第二步：混贴文本批量导入历史净值流水")
-    # 此处的导入目标默认锁定为上方用户正在查看的基金，避免混乱
     current_info = st.session_state.fund_config[edit_code]
     st.caption(f"当前混贴数据默认直接写入穿透目标：**[{edit_code}] {current_info['name']}**")
     
