@@ -393,14 +393,13 @@ st.markdown(f"""
 <div class="dash-header">
     <h1>📊 定投监控看板</h1>
     <div class="subtitle">
-        {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元<br>
-        ⚙️ 智能化网络对齐与混合文本导入控制台（Sheet一体版）
+        {len(st.session_state.fund_config)} 只监控资产 &nbsp;·&nbsp; 本月预计定投金额 <span style="color:#F0A500;font-weight:600">{total_monthly:,.0f}</span> 元
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 1  核心资产展示（动态重算）
+#  § 1  核心资产展示
 # ══════════════════════════════════════════════
 st.markdown('<div class="section-label">资产配置 · 智能执行状态</div>', unsafe_allow_html=True)
 for code, info in st.session_state.fund_config.items():
@@ -437,121 +436,125 @@ for code, info in st.session_state.fund_config.items():
     """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 2  控制台（二合一 Sheet 工作面板）
+#  § 2  控制台（点按切换多功能 Tab）
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-st.markdown('<div class="section-label">数据仓储与综合策略集中控制工作台</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-label">数据仓储与控制工作台</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="console-card">', unsafe_allow_html=True)
 
-# 顶部全局资产同步按钮
-c_sync1, c_sync2 = st.columns([2, 1])
-with c_sync1:
-    max_pages = st.slider("向下开凿净值历史深度（页数）", 1, 10, 2)
-with c_sync2:
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    if st.button("🚀 联网同步全员最新数据", type="primary", use_container_width=True):
-        all_codes = list(st.session_state.fund_config.keys())
-        bar = st.progress(0)
-        live_status = st.empty()
-        total_new = 0
-        log_lines = []
+# 还原点按切换的 tabs 结构
+tab_sync, tab_edit, tab_manage = st.tabs(["🚀 智能全网抓取", "📝 计划微调与文本批量导入 (Sheet)", "🔧 资产卡片维护"])
 
-        for idx, code in enumerate(all_codes):
-            fname = st.session_state.fund_config[code]['name']
-            live_status.info(f"⏳ 正在抓取并同步 [{code}] {fname}...")
-            
-            # 1. 抓取最新净值历史
-            local_db, new_front_count = move_ants_front_latest(code)
-            _, new_deep_count, _ = move_ants_deep_history_v2(fund_code=code, max_pages=max_pages)
-            total_new += (new_front_count + new_deep_count)
-            
-            # 2. 爬取最新核心估值要素
-            val_data = fetch_latest_valuation_online(code)
-            if val_data:
-                pe, pct, div = val_data
-                st.session_state.fund_config[code].update({'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div})
-            
-            bar.progress((idx + 1) / len(all_codes))
-            
-        save_config(st.session_state.fund_config)
-        live_status.empty()
-        bar.empty()
-        st.success(f"🎉 联网更新完成！补齐了 {total_new} 条历史净值流水，各大资产卡片估值指标均已强齐刷新！")
-        st.rerun()
+# ➡️ Tab 1: 联网自动更新最新数据
+with tab_sync:
+    c_sync1, c_sync2 = st.columns([2, 1])
+    with c_sync1:
+        max_pages = st.slider("向下开凿净值历史深度（页数）", 1, 10, 2, key="sync_slider")
+    with c_sync2:
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+        if st.button("开始同步全员最新数据", type="primary", use_container_width=True):
+            all_codes = list(st.session_state.fund_config.keys())
+            bar = st.progress(0)
+            live_status = st.empty()
+            total_new = 0
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+            for idx, code in enumerate(all_codes):
+                fname = st.session_state.fund_config[code]['name']
+                live_status.info(f"⏳ 正在抓取并同步 [{code}] {fname}...")
+                
+                # 1. 自动抓取最新净值
+                local_db, new_front_count = move_ants_front_latest(code)
+                _, new_deep_count, _ = move_ants_deep_history_v2(fund_code=code, max_pages=max_pages)
+                total_new += (new_front_count + new_deep_count)
+                
+                # 2. 自动爬取最新估值要素
+                val_data = fetch_latest_valuation_online(code)
+                if val_data:
+                    pe, pct, div = val_data
+                    st.session_state.fund_config[code].update({'pe_ttm': pe, 'pe_percent': pct, 'div_yield': div})
+                
+                bar.progress((idx + 1) / len(all_codes))
+                
+            save_config(st.session_state.fund_config)
+            live_status.empty()
+            bar.empty()
+            st.success(f"🎉 自动同步完成！共补齐 {total_new} 条最新流水，指标已全部对齐。")
+            st.rerun()
 
-# 项目基本计划表单（微调）与批量文本导入混合 Sheet
-edit_code = st.selectbox("当前操作项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}")
-current_info = st.session_state.fund_config[edit_code]
+# ➡️ Tab 2: 手动录入修改基本指标 与 批量复制文本导入 合并成的一个综合 Sheet
+with tab_edit:
+    edit_code = st.selectbox("当前操作项目", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}]  {st.session_state.fund_config[x]['name']}", key="sheet_select")
+    current_info = st.session_state.fund_config[edit_code]
 
-with st.form("sheet_integrated_form"):
-    st.markdown(f"**📝 修改定投计划 (如有需要可在下方干预兜底指标)**")
-    c1, c2 = st.columns(2)
-    with c1: new_period = st.text_input("定投周期", value=current_info['period'])
-    with c2: new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
-    
-    c3, c4 = st.columns(2)
-    with c3: fallback_pe = st.number_input("兜底 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
-    with c4: fallback_pct = st.number_input("兜底 PE 百分位（%）", value=float(current_info['pe_percent']), step=0.01, format="%.2f")
-    fallback_div = st.text_input("兜底 股息率", value=current_info['div_yield'])
-    
-    st.markdown("---")
-    st.markdown(f"**📋 混贴文本清洗流**（不含6位代码的数据默认写入当前选中的：**{current_info['name']}**）")
-    raw_text = st.text_area("在此粘贴网页或Excel中复制的数据流水（将与上面修改的内容一并提交）", height=120)
-    
-    if st.form_submit_button("💾 确认并保存当前 Sheet 的所有更改", type="secondary", use_container_width=True):
-        # 1. 保存配置参数和兜底指标
-        st.session_state.fund_config[edit_code].update({
-            'period': new_period, 'amount': new_amount, 'pe_ttm': fallback_pe, 'pe_percent': fallback_pct, 'div_yield': fallback_div
-        })
-        save_config(st.session_state.fund_config)
+    with st.form("integrated_sheet_form"):
+        st.markdown("##### 1. 手动微调 / 录入最新资产数据")
+        c1, c2 = st.columns(2)
+        with c1: new_period = st.text_input("定投周期", value=current_info['period'])
+        with c2: new_amount = st.number_input("定投金额（元）", value=int(current_info['amount']), step=10)
         
-        # 2. 如果存在混贴文本，执行自动注入合并
-        text_msg = ""
-        if raw_text.strip():
-            lines = raw_text.split('\n')
-            memory_db = {c: load_local_history(c) for c in st.session_state.fund_config}
-            import_details = {c: 0 for c in st.session_state.fund_config}
-            pattern = re.compile(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+([0-9.]+)')
-            code_pattern = re.compile(r'\b(\d{6})\b')
+        c3, c4 = st.columns(2)
+        with c3: fallback_pe = st.number_input("当前 PE (TTM)", value=float(current_info['pe_ttm']), step=0.01, format="%.2f")
+        with c4: fallback_pct = st.number_input("PE 百分位（%）", value=float(current_info['pe_percent']), step=0.01, format="%.2f")
+        fallback_div = st.text_input("当前股息率", value=current_info['div_yield'])
+        
+        st.markdown("<hr style='margin:15px 0; border-color:#21262D;'>", unsafe_allow_html=True)
+        
+        st.markdown(f"##### 2. 粘贴文本批量导入历史净值流水")
+        st.caption(f"不含6位基金代码的数据行将默认写入当前选中的：**{current_info['name']}**")
+        raw_text = st.text_area("在此直接粘贴网页或 Excel 复制的净值表格数据数据（将随上方的修改一并提交保存）", height=120)
+        
+        if st.form_submit_button("💾 确认保存此 Sheet 面板的全部更改", type="secondary", use_container_width=True):
+            # 第一部分：保存单条输入的数据修改
+            st.session_state.fund_config[edit_code].update({
+                'period': new_period, 'amount': new_amount, 'pe_ttm': fallback_pe, 'pe_percent': fallback_pct, 'div_yield': fallback_div
+            })
+            save_config(st.session_state.fund_config)
             
-            for line in lines:
-                m = pattern.search(line)
-                if not m: continue
-                raw_date = m.group(1).replace('/', '-').replace('.', '-')
-                parts = raw_date.split('-')
-                standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                try:
-                    dwjz = float(m.group(2))
-                    gm = re.search(r'([-+]?[0-9.]+)%', line)
-                    growth = float(gm.group(1)) if gm else 0.0
-                    target = edit_code
-                    cm = code_pattern.search(line)
-                    if cm and cm.group(1) in memory_db: target = cm.group(1)
+            # 第二部分：同时处理混贴文本批量导入
+            text_msg = ""
+            if raw_text.strip():
+                lines = raw_text.split('\n')
+                memory_db = {c: load_local_history(c) for c in st.session_state.fund_config}
+                import_details = {c: 0 for c in st.session_state.fund_config}
+                pattern = re.compile(r'(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+([0-9.]+)')
+                code_pattern = re.compile(r'\b(\d{6})\b')
+                
+                for line in lines:
+                    m = pattern.search(line)
+                    if not m: continue
+                    raw_date = m.group(1).replace('/', '-').replace('.', '-')
+                    parts = raw_date.split('-')
+                    standard_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+                    try:
+                        dwjz = float(m.group(2))
+                        gm = re.search(r'([-+]?[0-9.]+)%', line)
+                        growth = float(gm.group(1)) if gm else 0.0
+                        target = edit_code
+                        cm = code_pattern.search(line)
+                        if cm and cm.group(1) in memory_db: target = cm.group(1)
+                        
+                        memory_db[target] = [i for i in memory_db[target] if i['日期'] != standard_date]
+                        memory_db[target].append({"日期": standard_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
+                        import_details[target] += 1
+                    except: continue
                     
-                    memory_db[target] = [i for i in memory_db[target] if i['日期'] != standard_date]
-                    memory_db[target].append({"日期": standard_date, "单位净值": dwjz, "累计净值": dwjz, "净值增长率": growth})
-                    import_details[target] += 1
-                except: continue
-                
-            total = 0
-            for c, cnt in import_details.items():
-                if cnt > 0:
-                    memory_db[c] = sorted(memory_db[c], key=lambda x: x['日期'], reverse=True)
-                    save_local_history(c, memory_db[c])
-                    total += cnt
-            if total > 0:
-                text_msg = f" 并且成功清洗导入了 {total} 条本地流水账目数据！"
-            else:
-                text_msg = " （未发现合法的混贴净值日期结构）"
-                
-        st.success(f"✅ 基本配置保存成功！{text_msg}")
-        st.rerun()
+                total = 0
+                for c, cnt in import_details.items():
+                    if cnt > 0:
+                        memory_db[c] = sorted(memory_db[c], key=lambda x: x['日期'], reverse=True)
+                        save_local_history(c, memory_db[c])
+                        total += cnt
+                if total > 0:
+                    text_msg = f" 并成功清洗批量导入了 {total} 条流水线数据！"
+                else:
+                    text_msg = " （未在文本框发现规范的净值排布）"
+                    
+            st.success(f"✅ Sheet 数据合并保存成功！{text_msg}")
+            st.rerun()
 
-st.markdown("<br>", unsafe_allow_html=True)
-with st.expander("➕ / 🗑️ 卡片增删维护区"):
+# ➡️ Tab 3: 新增和删除卡片
+with tab_manage:
     c_add, c_del = st.columns(2)
     with c_add:
         st.markdown("##### ➕ 新增资产")
@@ -569,24 +572,24 @@ with st.expander("➕ / 🗑️ 卡片增删维护区"):
                         'pe_ttm': 15.0, 'pe_percent': 50.0, 'div_yield': '2.00%'
                     }
                     save_config(st.session_state.fund_config)
-                    st.success(f"✅ [{add_code}] 已建立，请点击上方按钮一键联网对齐数据！")
+                    st.success(f"✅ [{add_code}] 已建立！")
                     st.rerun()
     with c_del:
         st.markdown("##### 🗑️ 移除资产")
         del_target = st.selectbox("选择移除目标", list(st.session_state.fund_config.keys()), format_func=lambda x: f"[{x}] {st.session_state.fund_config[x]['name']}")
-        confirm = st.checkbox("我确认清除本地全部流水且不可逆")
-        if st.button("擦除项目", disabled=not confirm):
+        confirm = st.checkbox("确认同步抹除本地历史文件")
+        if st.button("擦除资产项", disabled=not confirm):
             del st.session_state.fund_config[del_target]
             save_config(st.session_state.fund_config)
             hist = os.path.join(HISTORY_DIR, f"{del_target}_hist.json")
             if os.path.exists(hist): os.remove(hist)
-            st.success(f"🧹 项目抹除干净")
+            st.success(f"🧹 移除成功")
             st.rerun()
 
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
-#  § 3  多维视窗走势图表
+#  § 3  多维视窗走势图表（联动 Tab 2 选中的基金）
 # ══════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown(f'<div class="section-label">走势穿透线 · {st.session_state.fund_config[edit_code]["name"]}</div>', unsafe_allow_html=True)
