@@ -135,29 +135,112 @@ def http_get(url, extra_headers=None, timeout=15):
     except Exception as e:
         return None, str(e)
 
-def fetch_index_pe(secid):
+_INVALID = {'-', '--', '', 'null', 'None', '0', '0.0'}
+
+def _parse_float(v):
+    """安全转 float，失败返回 None"""
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except Exception:
+        return None
+
+def fetch_index_raw(secid):
     """
-    从东方财富行情接口获取 A 股指数当前 PE(TTM)。
-    secid 格式：'0.399673'（深市）/ '1.000300'（沪市）
-    返回 (pe_float, error_str)
+    从东方财富 push2 接口抓取指数全部常用字段，用于诊断哪个字段是 PE。
+    返回 (field_dict, error)
+    已知字段含义（股票/指数可能有差异）：
+      f9   = 市盈率(动)   f114 = 市盈率(静)   f115 = 市盈率(TTM)
+      f116 = 市净率(PB)   f117 = 市销率(PS)
+      f162 = 股息率(动)   f163 = 股息率(静)
+      f14  = 名称         f2   = 最新价
     """
+    fields = 'f2,f9,f114,f115,f116,f117,f162,f163,f14'
     url = (
         'https://push2.eastmoney.com/api/qt/stock/get'
         f'?ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&invt=2'
-        f'&fields=f9,f114,f14&secid={secid}'
+        f'&fields={fields}&secid={secid}'
     )
     text, err = http_get(url)
     if text is None:
         return None, err
     try:
-        d = json.loads(text).get('data', {})
-        # f9 = 动态PE，f114 = PE TTM（部分指数）
-        pe = d.get('f114') or d.get('f9')
-        if pe and str(pe) not in ('-', '--', ''):
-            return round(float(pe), 2), None
-        return None, f'接口未返回PE数据 (f9={d.get("f9")}, f114={d.get("f114")})'
+        return json.loads(text).get('data', {}), None
     except Exception as e:
-        return None, f'解析失败: {e} | 原始: {text[:80]}'
+        return None, f'解析失败: {e}'
+
+def fetch_index_valuation(secid):
+    """
+    多源交叉获取指数估值数据。
+    返回 dict: {pe_ttm, pe_dyn, pe_static, pb, div_yield, source_notes}
+    每个字段都有来源标注，供用户判断可信度。
+    """
+    result = {
+        'pe_ttm': None, 'pe_dyn': None, 'pe_static': None,
+        'pb': None, 'div_yield': None, 'notes': []
+    }
+
+    # ── 来源 A：push2 行情接口（字段诊断）──
+    raw, err = fetch_index_raw(secid)
+    if raw:
+        # 东方财富对指数的字段含义与股票略有差异，f115 才是 PE TTM
+        pe_ttm    = _parse_float(raw.get('f115'))
+        pe_dyn    = _parse_float(raw.get('f9'))
+        pe_static = _parse_float(raw.get('f114'))
+        pb        = _parse_float(raw.get('f116'))
+        div       = _parse_float(raw.get('f162'))
+
+        result.update({
+            'pe_ttm':    pe_ttm,
+            'pe_dyn':    pe_dyn,
+            'pe_static': pe_static,
+            'pb':        pb,
+            'div_yield': f'{div:.2f}%' if div else None,
+        })
+        result['notes'].append(
+            f'push2[f9={raw.get("f9")} f114={raw.get("f114")} '
+            f'f115={raw.get("f115")} f116={raw.get("f116")} f162={raw.get("f162")}]'
+        )
+    else:
+        result['notes'].append(f'push2 失败: {err}')
+
+    # ── 来源 B：东方财富数据中心（指数基本面专用表）──
+    market, code_only = secid.split('.')
+    suffix = 'SH' if market == '1' else 'SZ'
+    secucode = f'{code_only}.{suffix}'
+    dc_url = (
+        'https://datacenter-web.eastmoney.com/api/data/v1/get'
+        f'?reportName=RPT_INDEX_BASIC_FINDATA'
+        f'&columns=SECUCODE,INDEX_CODE,PETTM,PE,PB,DIVIDENDYIELD'
+        f'&filter=(SECUCODE="{secucode}")'
+    )
+    text2, err2 = http_get(dc_url)
+    if text2:
+        try:
+            rows = json.loads(text2).get('result', {}).get('data') or []
+            if rows:
+                row = rows[0]
+                dc_pe_ttm = _parse_float(row.get('PETTM'))
+                dc_pe     = _parse_float(row.get('PE'))
+                dc_pb     = _parse_float(row.get('PB'))
+                dc_div    = _parse_float(row.get('DIVIDENDYIELD'))
+                # 以数据中心结果覆盖（该接口为指数专用，更可信）
+                if dc_pe_ttm: result['pe_ttm']    = dc_pe_ttm
+                if dc_pe:     result['pe_static']  = dc_pe
+                if dc_pb:     result['pb']          = dc_pb
+                if dc_div:    result['div_yield']   = f'{dc_div:.2f}%'
+                result['notes'].append(
+                    f'datacenter[PETTM={row.get("PETTM")} PE={row.get("PE")} '
+                    f'PB={row.get("PB")} DIV={row.get("DIVIDENDYIELD")}]'
+                )
+            else:
+                result['notes'].append('datacenter 返回空行')
+        except Exception as e:
+            result['notes'].append(f'datacenter 解析失败: {e}')
+    else:
+        result['notes'].append(f'datacenter 失败: {err2}')
+
+    return result
 
 def fetch_nav_page(code, page):
     """
@@ -567,39 +650,89 @@ with tab_sync:
 with tab_pe:
     st.markdown("""
     <div class="sbox info">
-    📌 <b>数据说明</b><br>
-    · A 股指数（有行情代码）：自动从东方财富获取当前 PE(TTM)<br>
-    · 境外指数（纳指/标普）：PE 数据需手动维护<br>
-    · <b>PE 百分位</b>：每次自动获取 PE 后累积存储，样本越多越准确；初期请手动输入历史参考值
+    📌 <b>数据来源说明</b><br>
+    · <b>来源A</b>：东方财富 push2 行情接口（f115=PE TTM，f9=动态PE，f114=静态PE，f162=股息率）<br>
+    · <b>来源B</b>：东方财富数据中心指数基本面专用表（PETTM / DIVIDENDYIELD，更可信）<br>
+    · 两源结果会同时显示供你对比，不一致时以数据中心（B源）为准<br>
+    · 境外指数（纳指/标普）无 A 股行情代码，只能手动维护
     </div>
     """, unsafe_allow_html=True)
 
-    if st.button('🔄 自动获取所有 A 股指数 PE'):
-        updated = []
+    if st.button('🔍 获取所有 A 股指数估值（双源对比）', type='primary'):
+        st.session_state.pe_fetch_results = {}
         for code, info in cfg.items():
             secid = info.get('index_secid')
             if not secid:
                 continue
-            with st.spinner(f'获取 [{code}] {info["index_name"]} PE…'):
-                pe, err = fetch_index_pe(secid)
-            if pe is not None:
-                pct = record_and_calc_pe_percent(code, pe)
-                cfg[code]['pe_ttm'] = pe
+            with st.spinner(f'获取 [{code}] {info["index_name"]}…'):
+                val = fetch_index_valuation(secid)
+            st.session_state.pe_fetch_results[code] = val
+
+    if st.session_state.get('pe_fetch_results'):
+        st.markdown('---')
+        st.markdown('**📊 原始数据对比（确认后点击应用）**')
+        apply_targets = {}
+
+        for code, val in st.session_state.pe_fetch_results.items():
+            info = cfg[code]
+            st.markdown(f"**[{code}] {info['index_name']}**")
+
+            # 展示双源数据
+            cols = st.columns(4)
+            def show_val(col, label, v, highlight=False):
+                color = '#F0A500' if highlight and v else '#E6EDF3'
+                col.markdown(
+                    f'<div class="mcell"><div class="mlbl">{label}</div>'
+                    f'<div class="mval" style="color:{color};font-size:14px">'
+                    f'{v if v is not None else "—"}</div></div>',
+                    unsafe_allow_html=True
+                )
+            show_val(cols[0], 'PE TTM（推荐用）', val['pe_ttm'], highlight=True)
+            show_val(cols[1], 'PE 动态',          val['pe_dyn'])
+            show_val(cols[2], 'PE 静态',          val['pe_static'])
+            show_val(cols[3], '股息率（自动）',    val['div_yield'])
+
+            with st.expander('查看原始字段（诊断用）'):
+                for note in val['notes']:
+                    st.code(note, language=None)
+
+            # 让用户确认要应用的值
+            best_pe = val['pe_ttm'] or val['pe_dyn'] or val['pe_static']
+            c1, c2 = st.columns(2)
+            with c1:
+                confirmed_pe = st.number_input(
+                    f'确认 PE TTM [{code}]',
+                    value=float(best_pe) if best_pe else float(info.get('pe_ttm', 15)),
+                    step=0.1, format='%.2f', key=f'confirm_pe_{code}'
+                )
+            with c2:
+                confirmed_div = st.text_input(
+                    f'确认股息率 [{code}]',
+                    value=val['div_yield'] or info.get('div_yield', ''),
+                    key=f'confirm_div_{code}'
+                )
+            apply_targets[code] = {'pe': confirmed_pe, 'div': confirmed_div}
+            st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
+        if st.button('✅ 应用所有确认值并保存'):
+            for code, vals in apply_targets.items():
+                pct = record_and_calc_pe_percent(code, vals['pe'])
+                cfg[code]['pe_ttm'] = vals['pe']
+                if vals['div']:
+                    cfg[code]['div_yield'] = vals['div']
                 if pct is not None:
                     cfg[code]['pe_percent'] = pct
-                    updated.append(f'✅ [{code}] PE={pe}，百分位={pct}%（基于{len(load_pe_history(code))}个样本）')
+                    st.markdown(f'✅ [{code}] PE={vals["pe"]}，股息率={vals["div"]}，'
+                                f'百分位={pct}%（{len(load_pe_history(code))}个样本）')
                 else:
-                    updated.append(f'✅ [{code}] PE={pe}（样本不足，百分位请手动输入）')
-            else:
-                updated.append(f'⚠️ [{code}] 获取失败：{err}')
-        save_config(cfg)
-        st.session_state.cfg = cfg
-        for msg in updated:
-            st.markdown(msg)
-        st.rerun()
+                    st.markdown(f'✅ [{code}] PE={vals["pe"]}，股息率={vals["div"]}（样本不足，百分位请手动填）')
+            save_config(cfg)
+            st.session_state.cfg = cfg
+            st.session_state.pe_fetch_results = {}
+            st.rerun()
 
     st.markdown('---')
-    st.markdown('**手动维护各基金估值参数**')
+    st.markdown('**手动维护估值参数**（PE 百分位始终需手动或等样本积累）')
     edit_code = st.selectbox('选择基金', list(cfg.keys()),
                               format_func=lambda x: f'[{x}] {cfg[x]["name"]}',
                               key='pe_edit_sel')
