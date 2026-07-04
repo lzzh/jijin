@@ -167,76 +167,118 @@ def fetch_index_raw(secid):
 def fetch_index_valuation(secid):
     """
     多源交叉获取指数估值数据。
-    返回 dict: {pe_ttm, pe_dyn, pe_static, pb, div_yield, source_notes}
+    来源A: 东方财富 push2（字段诊断用）
+    来源B: 深交所官方估值接口（SZ指数专用，最权威）
+    来源C: 上交所官方接口（SH指数专用）
+    返回 dict: {pe_ttm, pe_static, pb, div_yield, notes}
     """
-    result = {
-        'pe_ttm': None, 'pe_dyn': None, 'pe_static': None,
-        'pb': None, 'div_yield': None, 'notes': []
-    }
+    result = {'pe_ttm': None, 'pe_static': None, 'pb': None, 'div_yield': None, 'notes': []}
+    market, code_only = secid.split('.')
 
-    # ── 来源 A：push2 行情接口 ──
+    # ── 来源 A：push2 行情接口（字段说明）────────────────
+    # 对"指数"，各字段实际含义与股票不同：
+    #   f9   = 动态PE（指数通常为空）
+    #   f114 = 静态PE（有值，可参考）
+    #   f115 = 对指数无意义，常为0，不可用
+    #   f116 = 总市值（万亿量级），不是PB
+    #   f162 = 股息率（可能为空）
     raw, err = fetch_index_raw(secid)
     if raw:
-        pe_ttm    = _parse_float(raw.get('f115'))
-        pe_dyn    = _parse_float(raw.get('f9'))
         pe_static = _parse_float(raw.get('f114'))
-        pb        = _parse_float(raw.get('f116'))
         div       = _parse_float(raw.get('f162'))
-        if pe_ttm is not None:
-            result['pe_ttm'] = pe_ttm
-        if pe_dyn is not None:
-            result['pe_dyn'] = pe_dyn
-        if pe_static is not None:
+        pb_raw    = _parse_float(raw.get('f116'))
+        pb        = pb_raw if (pb_raw and pb_raw < 100) else None
+        if pe_static:
             result['pe_static'] = pe_static
-        if pb is not None and pb < 1000:
+        if pb:
             result['pb'] = pb
-        if div is not None and div > 0:
+        if div:
             result['div_yield'] = f'{div:.2f}%'
         result['notes'].append(
-            f'push2[f9={raw.get("f9")} f114={raw.get("f114")} '
-            f'f115={raw.get("f115")} f116={raw.get("f116")} f162={raw.get("f162")}]'
+            f'push2 ▶ f9(动态PE)={raw.get("f9")}  '
+            f'f114(静态PE)={raw.get("f114")}  '
+            f'f115(指数无效)={raw.get("f115")}  '
+            f'f116(总市值非PB)={raw.get("f116")}  '
+            f'f162(股息率)={raw.get("f162")}'
         )
     else:
         result['notes'].append(f'push2 失败: {err}')
 
-    # ── 来源 B：东方财富数据中心（指数基本面专用表） ──
-    market, code_only = secid.split('.')
-    suffix = 'SH' if market == '1' else 'SZ'
-    secucode = f'{code_only}.{suffix}'
-    dc_url = (
-        'https://datacenter-web.eastmoney.com/api/data/v1/get'
-        f'?reportName=RPT_INDEX_BASIC_FINDATA'
-        f'&columns=SECUCODE,INDEX_CODE,PETTM,PE,PB,DIVIDENDYIELD'
-        f'&filter=(SECUCODE="{secucode}")'
-    )
-    text2, err2 = http_get(dc_url)
-    if text2:
-        try:
-            data2 = json.loads(text2).get('result')
-            if isinstance(data2, dict) and data2.get('data') and len(data2['data']) > 0:
-                row = data2['data'][0]
-                dc_pe_ttm = _parse_float(row.get('PETTM'))
-                dc_pe     = _parse_float(row.get('PE'))
-                dc_pb     = _parse_float(row.get('PB'))
-                dc_div    = _parse_float(row.get('DIVIDENDYIELD'))
-                if dc_pe_ttm is not None:
-                    result['pe_ttm'] = dc_pe_ttm
-                if dc_pe is not None:
-                    result['pe_static'] = dc_pe
-                if dc_pb is not None and dc_pb < 1000:
-                    result['pb'] = dc_pb
-                if dc_div is not None and dc_div > 0:
-                    result['div_yield'] = f'{dc_div:.2f}%'
-                result['notes'].append(
-                    f'datacenter[PETTM={row.get("PETTM")} PE={row.get("PE")} '
-                    f'PB={row.get("PB")} DIV={row.get("DIVIDENDYIELD")}]'
-                )
-            else:
-                result['notes'].append('datacenter 返回空数据或格式异常')
-        except Exception as e:
-            result['notes'].append(f'datacenter 解析失败: {e}')
-    else:
-        result['notes'].append(f'datacenter 失败: {err2}')
+    # ── 来源 B：深交所官方估值（SZ指数最权威）────────────
+    if market == '0':
+        szse_url = (
+            'https://www.szse.cn/api/report/ShowReport'
+            '?SHOWTYPE=JSON&CATALOGID=1815_zhishu&TABKEY=tab1'
+        )
+        text_sz, err_sz = http_get(szse_url, extra_headers={'Referer': 'https://www.szse.cn/'})
+        if text_sz:
+            try:
+                rows = json.loads(text_sz)
+                # 字段：zqdm=代码 syl1=静态PE syl2=滚动PE sjl=PB jzl=股息率
+                matched = [r for r in rows if str(r.get('zqdm', '')).strip() == code_only]
+                if matched:
+                    r = matched[0]
+                    pe_ttm    = _parse_float(r.get('syl2'))
+                    pe_static = _parse_float(r.get('syl1'))
+                    pb        = _parse_float(r.get('sjl'))
+                    div_raw   = str(r.get('jzl', '')).replace('%', '').strip()
+                    div       = _parse_float(div_raw)
+                    if pe_ttm:
+                        result['pe_ttm'] = pe_ttm
+                    if pe_static and not result['pe_static']:
+                        result['pe_static'] = pe_static
+                    if pb:
+                        result['pb'] = pb
+                    if div:
+                        result['div_yield'] = f'{div:.2f}%'
+                    result['notes'].append(
+                        f'深交所官方 ▶ 指数={r.get("zqjc")}  '
+                        f'滚动PE(TTM)={r.get("syl2")}  '
+                        f'静态PE={r.get("syl1")}  '
+                        f'PB={r.get("sjl")}  '
+                        f'股息率={r.get("jzl")}'
+                    )
+                else:
+                    result['notes'].append(f'深交所 ▶ 未找到代码 {code_only}，共{len(rows)}条记录')
+            except Exception as e:
+                result['notes'].append(f'深交所 ▶ 解析失败: {e} | 原始: {text_sz[:120]}')
+        else:
+            result['notes'].append(f'深交所 ▶ 请求失败: {err_sz}')
+
+    # ── 来源 C：上交所官方估值（SH指数）────────────────
+    elif market == '1':
+        sse_url = (
+            'http://query.sse.com.cn/sseQuery/commonSoaQuery.do'
+            '?sqlId=COMMON_SSE_ZQPZ_XXPL_GFZQPZ_L&fileType=json&isPagination=false'
+        )
+        text_sh, err_sh = http_get(
+            sse_url,
+            extra_headers={'Referer': 'http://www.sse.com.cn/'},
+            timeout=15
+        )
+        if text_sh:
+            try:
+                rows = json.loads(text_sh).get('result', [])
+                matched = [r for r in rows if str(r.get('ZQDM', '')).strip() == code_only]
+                if matched:
+                    r = matched[0]
+                    pe_ttm = _parse_float(r.get('HQSYL'))
+                    pb     = _parse_float(r.get('HQSJL'))
+                    if pe_ttm:
+                        result['pe_ttm'] = pe_ttm
+                    if pb:
+                        result['pb'] = pb
+                    result['notes'].append(
+                        f'上交所官方 ▶ 滚动PE={r.get("HQSYL")}  PB={r.get("HQSJL")}'
+                    )
+                else:
+                    result['notes'].append(f'上交所 ▶ 未找到代码 {code_only}，共{len(rows)}条')
+            except Exception as e:
+                result['notes'].append(f'上交所 ▶ 解析失败: {e}')
+        else:
+            result['notes'].append(f'上交所 ▶ 请求失败: {err_sh}')
+
+    return result
 
     return result
 
@@ -673,10 +715,10 @@ with tab_pe:
     st.markdown("""
     <div class="sbox info">
     📌 <b>数据来源说明</b><br>
-    · <b>来源A</b>：东方财富 push2 行情接口（f115=PE TTM，f9=动态PE，f114=静态PE，f162=股息率）<br>
-    · <b>来源B</b>：东方财富数据中心指数基本面专用表（PETTM / DIVIDENDYIELD，更可信）<br>
-    · 两源结果会同时显示供你对比，不一致时以数据中心（B源）为准<br>
-    · 境外指数（纳指/标普）无 A 股行情代码，只能手动维护
+    · <b>来源A（push2）</b>：f114=静态PE（可参考），f116=总市值非PB，f115对指数无效<br>
+    · <b>来源B（深交所官方）</b>：SZ指数专用，syl2=滚动PE(TTM)、sjl=PB、jzl=股息率，最权威<br>
+    · <b>来源C（上交所官方）</b>：SH指数专用，HQSYL=PE<br>
+    · 境外指数（纳指/标普）无官方 A 股估值，只能手动维护
     </div>
     """, unsafe_allow_html=True)
 
