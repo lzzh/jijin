@@ -1,38 +1,177 @@
 import streamlit as st
-import pandas as pd
-import urllib.request
 import json
 import os
 import time
+import random
+import requests
 
-# 设置网页布局
-st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
+st.set_page_config(page_title="精简版定投监控看板", layout="centered", initial_sidebar_state="collapsed")
 
-# --- 手机端纯净体验 CSS 注入 ---
+# ══════════════════════════════════════════════
+#  极简金融终端样式
+# ══════════════════════════════════════════════
 st.markdown("""
 <style>
-    #MainMenu {visibility: hidden;} 
-    footer {visibility: hidden;}
-    header {background-color: transparent !important;}
-    .stMarkdown div p { word-break: break-all !important; white-space: pre-wrap !important; }
-    .fund-card { background-color: #1E232A; border-radius: 12px; padding: 16px; margin-bottom: 1px; border: 1px solid #3A3F47; }
-    .fund-title { font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 8px; border-bottom: 1px solid #3A3F47; padding-bottom: 6px; }
-    .fund-tag { background-color: #2A2F35; color: #A1C4FD; padding: 2px 8px; border-radius: 4px; font-size: 12px; display: inline-block; margin-bottom: 5px; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+
+#MainMenu, footer, header { visibility: hidden; }
+* { box-sizing: border-box; }
+
+html, body, [class*="css"] {
+    font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background-color: #080C12 !important;
+    color: #C9D1D9 !important;
+}
+
+.block-container {
+    padding: 1rem 0.75rem 3rem 0.75rem !important;
+    max-width: 650px !important;
+}
+
+.dash-header {
+    background: linear-gradient(135deg, #0D1117 0%, #111827 100%);
+    border: 1px solid #1F2937;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+    position: relative;
+}
+.dash-header h1 {
+    font-size: 18px !important;
+    font-weight: 700 !important;
+    color: #E6EDF3 !important;
+    margin: 0 0 4px 0 !important;
+}
+.dash-header .subtitle {
+    font-size: 11px;
+    color: #6E7681;
+}
+
+.section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #F0A500;
+    margin: 20px 0 12px 0;
+}
+
+.fund-card {
+    background: #0D1117;
+    border: 1px solid #1F2937;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    position: relative;
+}
+.fund-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 12px; bottom: 12px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+}
+.fund-card.status-low::before  { background: #2DA44E; }
+.fund-card.status-mid::before  { background: #F0A500; }
+.fund-card.status-high::before { background: #F85149; }
+
+.fund-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 10px;
+}
+.fund-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #E6EDF3;
+}
+.fund-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: #6E7681;
+}
+.fund-plan-badge {
+    background: #161B22;
+    border: 1px solid #21262D;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    color: #58A6FF;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.metrics-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.metric-cell {
+    background: #161B22;
+    border-radius: 6px;
+    padding: 8px 4px;
+    text-align: center;
+}
+.metric-label {
+    font-size: 9px;
+    color: #6E7681;
+    margin-bottom: 4px;
+}
+.metric-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: #E6EDF3;
+}
+.metric-value.low  { color: #2DA44E; }
+.metric-value.mid  { color: #F0A500; }
+.metric-value.high { color: #F85149; }
+
+.strategy-box {
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    background: #161B22;
+    border-left: 2px solid #30363D;
+}
+
+.console-card {
+    background: #0D1117;
+    border: 1px solid #1F2937;
+    border-radius: 12px;
+    padding: 14px;
+}
+
+div[data-testid="stSelectbox"] > div > div,
+div[data-testid="stTextInput"] > div > div > input,
+div[data-testid="stNumberInput"] > div > div > input {
+    background-color: #161B22 !important;
+    border-color: #21262D !important;
+    color: #C9D1D9 !important;
+    border-radius: 6px !important;
+}
+
+div[data-testid="stButton"] > button {
+    background: #161B22 !important;
+    border: 1px solid #21262D !important;
+    color: #C9D1D9 !important;
+    border-radius: 6px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 我的智能化定投实时监控看板")
-
-CONFIG_FILE = "my_fund_settings.json"
-HISTORY_DIR = "fund_history_db"
-if not os.path.exists(HISTORY_DIR):
-    os.makedirs(HISTORY_DIR)
+# ══════════════════════════════════════════════
+#  配置存储层（不存复杂历史，只存状态）
+# ══════════════════════════════════════════════
+CONFIG_FILE = "my_fund_pure_settings.json"
 
 DEFAULT_CONFIG = {
-    '008163': {'name': '南方标普红利低波50ETF联接A', 'index_name': '标普红利低波50', 'period': '每月21号', 'amount': 1100, 'pe_ttm': 8.22, 'pe_percent': 84.82, 'div_yield': '4.85%', 'status': '估值偏高、股息最优', 'base_strategy': '⚠️ 估值百分位偏高(>80%)。建议【维持当前定投不加仓】。'}, 
-    '016452': {'name': '南方纳斯达克100指数发起（QDII）A', 'index_name': '纳斯达克100', 'period': '每天', 'amount': 80, 'pe_ttm': 34.03, 'pe_percent': 76.97, 'div_yield': '0.36%', 'status': '显著高估、轻微红利', 'base_strategy': '🚨 处于历史高位区间。建议将当前的 {plan} 【下调至 {half_amount} 元左右】。'}, 
-    '023882': {'name': '华夏创业板50ETF发起式联接A', 'index_name': '创业板50', 'period': '每周二', 'amount': 100, 'pe_ttm': 44.48, 'pe_percent': 60.78, 'div_yield': '0.80%', 'status': '中性偏贵、低股息', 'base_strategy': '等权观望。建议【严格执行常规计划 {plan}】。'},   
-    '023917': {'name': '华夏国证自由现金流ETF发起式联接A', 'index_name': '国证自由现金流', 'period': '每周二', 'amount': 790, 'pe_ttm': 11.68, 'pe_percent': 30.77, 'div_yield': '3.20%', 'status': '深度低估、均衡现金流', 'base_strategy': '💎 绝对核心加仓区！建议【坚定执行当前计划 {plan}】。'}   
+    '008163': { 'name': '南方标普红利低波50ETF联接A', 'index_name': '标普红利低波50', 'period': '每月21号', 'amount': 1100, 'latest_nv': 0.0, 'pe_ttm': 8.22, 'pe_percent': 84.82, 'div_yield': '4.85%' },
+    '016452': { 'name': '南方纳斯达克100指数发起（QDII）A', 'index_name': '纳斯达克100', 'period': '每天', 'amount': 80, 'latest_nv': 0.0, 'pe_ttm': 34.03, 'pe_percent': 76.97, 'div_yield': '0.36%' },
+    '023882': { 'name': '华夏创业板50ETF发起式联接A', 'index_name': '创业板50', 'period': '每周二', 'amount': 100, 'latest_nv': 0.0, 'pe_ttm': 44.48, 'pe_percent': 60.78, 'div_yield': '0.80%' },
+    '023917': { 'name': '华夏国证自由现金流ETF发起式联接A', 'index_name': '国证自由现金流', 'period': '每周二', 'amount': 790, 'latest_nv': 0.0, 'pe_ttm': 11.68, 'pe_percent': 30.77, 'div_yield': '3.20%' }
 }
 
 def load_config():
@@ -43,285 +182,177 @@ def load_config():
     return DEFAULT_CONFIG
 
 def save_config(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f: json.dump(config, f, ensure_ascii=False, indent=4)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
 
-if 'fund_config' not in st.session_state:
-    st.session_state.fund_config = load_config()
+if 'pure_config' not in st.session_state:
+    st.session_state.pure_config = load_config()
 
-def load_local_history(fund_code):
-    file_path = os.path.join(HISTORY_DIR, f"{fund_code}_hist.json")
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
-        except: return []
-    return []
-
-def save_local_history(fund_code, data_list):
-    file_path = os.path.join(HISTORY_DIR, f"{fund_code}_hist.json")
-    with open(file_path, "w", encoding="utf-8") as f: json.dump(data_list, f, ensure_ascii=False, indent=4)
-
-# ===================== 【仅此处替换为新版低风控增量抓取函数】 =====================
-def move_ants_history(fund_code, page_index=1):
-    local_data = load_local_history(fund_code)
-    page_size = 40
-    existing_dates = {item['日期'] for item in local_data}
-
-    # 本地无历史，直接抓取传入页码
-    if len(local_data) == 0:
-        try:
-            url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize={page_size}"
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-            req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-            with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
-            data = json.loads(html)
-            if data and data.get("Data") is None:
-                return local_data, "今日搬运太频繁，请稍后再试。"
-            raw_list = data["Data"]["LSJZList"]
-            new_count = 0
-            for item in raw_list:
-                if not item.get("FSRQ") or not item.get("DWJZ"):
-                    continue
-                date_str = item["FSRQ"]
-                if date_str not in existing_dates:
-                    try:
-                        growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
-                    except:
-                        growth = 0.0
-                    local_data.append({
-                        "日期": date_str,
-                        "单位净值": float(item["DWJZ"]),
-                        "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
-                        "净值增长率": growth
-                    })
-                    new_count += 1
-            if new_count > 0:
-                local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
-                save_local_history(fund_code, local_data)
-                return local_data, f"🎉 成功搬运储存了 {new_count} 天历史数据！"
-            return local_data, "👌 本页数据已存在，无需重复搬运。"
-        except Exception as e:
-            return local_data, f"搬运遭遇波动 ({str(e)})"
-
-    # 本地已有数据，获取本地最早日期，试探分页找到分界点，跳过重复页面
-    sorted_asc = sorted(local_data, key=lambda x: x["日期"])
-    local_min_date = sorted_asc[0]["日期"]
-    split_page = None
-    probe_page = 1
-    max_probe = 20
-
-    while probe_page <= max_probe:
-        try:
-            url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={probe_page}&pageSize={page_size}"
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-            req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-            with urllib.request.urlopen(req, timeout=2) as response: html = response.read().decode('utf-8')
-            data = json.loads(html)
-            if data.get("Data") is None or len(data["Data"]["LSJZList"]) == 0:
-                break
-            page_dates = [row["FSRQ"] for row in data["Data"]["LSJZList"] if row.get("FSRQ")]
-            if local_min_date in page_dates:
-                split_page = probe_page
-                break
-            probe_page += 1
-            time.sleep(0.15)
-        except:
-            probe_page += 1
-            continue
-
-    # 判断当前请求页码是否在重复区间内，是则直接返回不请求
-    if split_page is not None and page_index <= split_page:
-        return local_data, f"👌 第{page_index}页全部是本地已存储历史，跳过本次请求防限流"
-
-    # 仅抓取缺失分页
+# ══════════════════════════════════════════════
+#  🌐 超轻量数据一键抓取逻辑
+# ══════════════════════════════════════════════
+def fetch_fund_all_data(fund_code):
+    """
+    通过移动端单一无防爬开放接口，秒级抓取净值与估值三要素（不追溯历史）
+    """
+    headers = {'User-Agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36'}
+    
+    # 1. 抓取最新净值
+    nv_url = f"https://fundmobapi.eastmoney.com/FundMApi/FundMNvSearch?FCODE={fund_code}&pageIndex=1&pageSize=1&plat=Wap&product=EFund"
+    latest_nv = 0.0
     try:
-        url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize={page_size}"
-        req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-        req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-        with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
-        data = json.loads(html)
-        if data and data.get("Data") is None:
-            return local_data, "今日搬运太频繁，请稍后再试。"
-        raw_list = data["Data"]["LSJZList"]
-        new_count = 0
-        for item in raw_list:
-            if not item.get("FSRQ") or not item.get("DWJZ"):
-                continue
-            date_str = item["FSRQ"]
-            if date_str not in existing_dates:
-                try:
-                    growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
-                except:
-                    growth = 0.0
-                local_data.append({
-                    "日期": date_str,
-                    "单位净值": float(item["DWJZ"]),
-                    "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]),
-                    "净值增长率": growth
-                })
-                new_count += 1
-        if new_count > 0:
-            local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
-            save_local_history(fund_code, local_data)
-            return local_data, f"🎉 成功搬运储存了 {new_count} 天历史数据！"
-        return local_data, "👌 本页数据已存在，无需重复搬运。"
-    except Exception as e:
-        return local_data, f"搬运遭遇波动 ({str(e)})"
-# ==================================================================================
+        r1 = requests.get(nv_url, headers=headers, timeout=5).json()
+        if r1.get("Data") and len(r1["Data"]) > 0:
+            latest_nv = float(r1["Data"][0].get("DWJZ", 0.0))
+    except: pass
 
+    # 2. 抓取最新估值综合要素
+    val_url = f"https://fundmobapi.eastmoney.com/FundMApi/FundVarietieValuationDetail?FCODE={fund_code}&deviceid=Wap&plat=Wap&product=EFund&version=2.0.0"
+    pe, pct, div = None, None, None
+    try:
+        r2 = requests.get(val_url, headers=headers, timeout=5).json()
+        if r2.get("Expansion") and r2["Expansion"].get("GZData"):
+            gz = r2["Expansion"]["GZData"]
+            pe = float(gz.get("PE", 0))
+            pct = float(gz.get("PE_PERCENT", 0))
+            div_yield = gz.get("D_YIELD", "0.00%")
+            div = f"{float(div_yield):.2f}%" if "%" not in str(div_yield) else div_yield
+    except: pass
 
-# --- 1. 全景卡片看板 ---
-st.subheader("📋 我的定投核心资产智能执行卡片")
-for code, info in st.session_state.fund_config.items():
-    plan_str = f"{info['period']} {info['amount']}元"
-    strategy_str = info['base_strategy'].format(plan=plan_str, half_amount=int(info['amount'] / 2))
-    st.markdown(f'<div class="fund-card"><div class="fund-title">📈 {info["name"]} ({code})</div><div class="fund-tag">跟踪指数: {info["index_name"]}</div> | <div class="fund-tag" style="color:#FFF;">当前计划: {plan_str}</div></div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("10年 PE 百分位", f"{info['pe_percent']:.2f}%")
-    c2.metric("当前 PE", f"{info['pe_ttm']:.2f}")
-    c3.metric("TTM 股息率", info['div_yield'])
-    st.info(strategy_str)
+    return latest_nv, pe, pct, div
 
-st.markdown("<hr>", unsafe_allow_html=True)
+# ══════════════════════════════════════════════
+#  极简策略输出
+# ══════════════════════════════════════════════
+def get_strategy_tips(pe_percent):
+    if pe_percent >= 75.0: return "high", "🚨 估值高危区：触发防御机制，建议减少扣款或静待回调。"
+    elif pe_percent <= 35.0: return "low", "💎 黄金低估区：安全边际极高，坚决执行，甚至可酌情加码！"
+    return "mid", "⚖️ 中性均衡区：水位平稳，无看空或看多信号，雷打不动执行原计划。"
 
+# ══════════════════════════════════════════════
+#  前端看板核心展示
+# ══════════════════════════════════════════════
+st.markdown("""
+<div class="dash-header">
+    <h1>📊 定投数据监控仓</h1>
+    <div class="subtitle">实时抓取最新单位净值、当前 PE、历史百分位及最新股息率</div>
+</div>
+""", unsafe_allow_html=True)
 
-# --- 2. 纯净控制台 ---
-st.subheader("🛠️ 基金综合管理控制台")
-edit_code = st.selectbox("🎯 当前选中的基金（用于下方数据穿透查看）：", list(st.session_state.fund_config.keys()), format_func=lambda x: f"{x} - {st.session_state.fund_config[x]['name']}")
-current_info = st.session_state.fund_config[edit_code]
+st.markdown('<div class="section-label">资产池精细状态</div>', unsafe_allow_html=True)
 
-op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能批量搬家工作台", "✨ 快捷添加新基金"], horizontal=True)
+for code, info in st.session_state.pure_config.items():
+    lvl, tips = get_strategy_tips(info['pe_percent'])
+    pct_cls = 'high' if info['pe_percent'] >= 75 else ('low' if info['pe_percent'] <= 35 else 'mid')
+    
+    st.markdown(f"""
+    <div class="fund-card status-{lvl}">
+        <div class="fund-card-header">
+            <div>
+                <div class="fund-name">{info['name']}</div>
+                <div class="fund-code">{code} · {info['index_name']}</div>
+            </div>
+            <div class="fund-plan-badge">{info['period']} | {info['amount']}元</div>
+        </div>
+        <div class="metrics-row">
+            <div class="metric-cell">
+                <div class="metric-label">最新净值</div>
+                <div class="metric-value" style="color:#58A6FF">{info['latest_nv']:.4f}</div>
+            </div>
+            <div class="metric-cell">
+                <div class="metric-label">PE百分位</div>
+                <div class="metric-value {pct_cls}">{info['pe_percent']:.2f}%</div>
+            </div>
+            <div class="metric-cell">
+                <div class="metric-label">当前 PE (TTM)</div>
+                <div class="metric-value">{info['pe_ttm']:.2f}</div>
+            </div>
+            <div class="metric-cell">
+                <div class="metric-label">最新股息率</div>
+                <div class="metric-value" style="color:#2DA44E">{info['div_yield']}</div>
+            </div>
+        </div>
+        <div class="strategy-box">{tips}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# 功能 A：修改计划
-if op_mode == "📝 修改定投计划":
-    with st.form("my_edit_form"):
-        col_p, col_a = st.columns(2)
-        with col_p: new_period = st.text_input("定投周期：", value=current_info['period'])
-        with col_a: new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10)
-        submit_plan = st.form_submit_button("💾 确认更新并永久保存计划")
-        if submit_plan:
-            st.session_state.fund_config[edit_code]['period'] = new_period
-            st.session_state.fund_config[edit_code]['amount'] = new_amount
-            save_config(st.session_state.fund_config)
-            st.success("🎉 配置已成功保存！看盘卡片已同步刷新。")
+# ══════════════════════════════════════════════
+#  数据交互控制台
+# ══════════════════════════════════════════════
+st.markdown('<div class="section-label">核心操作中心</div>', unsafe_allow_html=True)
+st.markdown('<div class="console-card">', unsafe_allow_html=True)
+
+c1, c2 = st.columns([2, 1])
+with c1:
+    target_code = st.selectbox("选择目标资产进行操作", list(st.session_state.pure_config.keys()), 
+                               format_func=lambda x: f"[{x}] {st.session_state.pure_config[x]['name']}")
+with c2:
+    st.write("") # 补齐高度
+    st.write("")
+    if st.button("🔄 仅更新当前选中项", type="primary", use_container_width=True):
+        with st.spinner("正在联网读取数据..."):
+            nv, pe, pct, div = fetch_fund_all_data(target_code)
+            if nv > 0: st.session_state.pure_config[target_code]['latest_nv'] = nv
+            if pe: st.session_state.pure_config[target_code]['pe_ttm'] = pe
+            if pct: st.session_state.pure_config[target_code]['pe_percent'] = pct
+            if div: st.session_state.pure_config[target_code]['div_yield'] = div
+            save_config(st.session_state.pure_config)
+            st.toast(f"✅ {target_code} 数据已精准同步！")
             st.rerun()
 
-# 功能 B：全员一键多页连挖数据同步（核心升级）
-elif op_mode == "🔄 🛠️ 智能批量搬家工作台":
-    st.markdown("#### 🚀 全员多页联动增量搬运机制（低风控：自动跳过本地已有分页）")
-    st.caption("设置下方深度后，点击启动按钮，系统会【全自动】遍历自选池里的所有基金，并自动跳过本地已存储分页，仅抓取缺失早年历史，减少无效请求防风控。")
-    
-    # 动态滑块：决定这次一键搬家搬几页
-    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2, help="1页=40天数据。选择3页意味着自动遍历第1、2、3页，重复分页直接跳过不请求。")
-    
-    if st.button(f"🔥 启动：全员一键追溯前 {max_pages} 页历史数据"):
-        all_codes = list(st.session_state.fund_config.keys())
-        total_steps = len(all_codes) * max_pages
-        step_now = 0
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        summary_results = {}
-        for code in all_codes:
-            summary_results[code] = 0
-            
-        # 开始双重嵌套大循环：先基金，后页码
-        for code in all_codes:
-            f_name = st.session_state.fund_config[code]['name']
-            for p_idx in range(1, max_pages + 1):
-                step_now += 1
-                status_text.markdown(f"⏳ 正在搬运：**{f_name}** 的第 **{p_idx}** 页数据（自动校验是否重复分页）...")
-                
-                # 执行搬家
-                _, msg = move_ants_history(code, page_index=p_idx)
-                # 从消息里提取新增条数用于统计
-                if "成功搬运储存了" in msg:
-                    num = int(msg.split(" ")[3])
-                    summary_results[code] += num
-                
-                # 更新进度条
-                progress_bar.progress(step_now / total_steps)
-                time.sleep(0.25) # 极小延时保护云端环境安全
-                
-        status_text.empty()
-        st.success(f"🎉 【多页连击搬运大获全胜！】已为你成功合并、去重并持久化以下增量数据：")
-        for code, count in summary_results.items():
-            st.markdown(f"• 基金 **{code}** ({st.session_state.fund_config[code]['name']})：本轮净增 **{count}** 天历史价格账本！")
+if st.button("🚀 懒人通道：一键更新全员数据", use_container_width=True):
+    with st.spinner("全员数据同步中..."):
+        for code in st.session_state.pure_config.keys():
+            nv, pe, pct, div = fetch_fund_all_data(code)
+            if nv > 0: st.session_state.pure_config[code]['latest_nv'] = nv
+            if pe: st.session_state.pure_config[code]['pe_ttm'] = pe
+            if pct: st.session_state.pure_config[code]['pe_percent'] = pct
+            if div: st.session_state.pure_config[code]['div_yield'] = div
+            time.sleep(random.uniform(0.2, 0.4))
+        save_config(st.session_state.pure_config)
+        st.toast("🎉 所有资产估值要素刷新完成！")
         st.rerun()
 
-# 功能 C：动态添加新基金
-else:
-    with st.form("add_new_fund_form"):
-        st.markdown("**✨ 添加一只核心资产基金到自选池**")
-        add_code = st.text_input("请输入6位基金代码（例如：001630）：", max_chars=6)
-        add_name = st.text_input("请输入基金简称（例如：天弘计算机C）：")
-        add_index = st.text_input("关联跟踪的指数名称（例如：计算机指数）：")
-        
-        col_ap1, col_ap2 = st.columns(2)
-        with col_ap1: add_period = st.text_input("设定定投周期：", value="每周二")
-        with col_ap2: add_amount = st.number_input("设定定投金额(元)：", value=100, step=10)
-            
-        submit_add = st.form_submit_button("➕ 确认添加这只基金")
-        if submit_add:
-            if len(add_code) != 6 or not add_name:
-                st.error("⚠️ 请输入正确的6位基金代码和基金简称！")
-            elif add_code in st.session_state.fund_config:
-                st.error("💡 该基金已在你的清单中，无需重复添加。")
-            else:
-                st.session_state.fund_config[add_code] = {
-                    'name': add_name,
-                    'index_name': add_index if add_index else '自定义指数',
-                    'period': add_period,
-                    'amount': add_amount,
-                    'pe_ttm': 20.0,
-                    'pe_percent': 50.0,
-                    'div_yield': '1.50%',
-                    'status': '新入库跟踪',
-                    'base_strategy': '🎯 刚刚加入自选池。建议【严格执行常规计划 {plan}】。'
+# ══════════════════════════════════════════════
+#  底座计划基础修改与常规增删
+# ══════════════════════════════════════════════
+st.markdown("---")
+op_mode = st.radio("其他常规管理", ["📝 调整基本扣款计划", "➕ 新增资产卡片", "🗑️ 移除当前卡片"], horizontal=True)
+
+if op_mode == "📝 调整基本扣款计划":
+    with st.form("edit_form"):
+        curr = st.session_state.pure_config[target_code]
+        st.markdown(f"修改 **{curr['name']}** 的扣款计划")
+        cc1, cc2 = st.columns(2)
+        with cc1: u_period = st.text_input("定投周期", value=curr['period'])
+        with cc2: u_amount = st.number_input("定投金额", value=int(curr['amount']), step=10)
+        if st.form_submit_button("保存计划修改"):
+            st.session_state.pure_config[target_code].update({'period': u_period, 'amount': u_amount})
+            save_config(st.session_state.pure_config)
+            st.rerun()
+
+elif op_mode == "➕ 新增资产卡片":
+    with st.form("add_pure_form"):
+        a_code = st.text_input("基金代码 (6位)", max_chars=6)
+        a_name = st.text_input("基金简称")
+        a_index = st.text_input("跟踪指数名称", value="宽基指数")
+        a_period = st.text_input("周期", value="每周二")
+        a_amount = st.number_input("定投金额", value=100, step=10)
+        if st.form_submit_button("确认建立空白卡片"):
+            if len(a_code) == 6 and a_name:
+                st.session_state.pure_config[a_code] = {
+                    'name': a_name, 'index_name': a_index, 'period': a_period, 'amount': a_amount,
+                    'latest_nv': 0.0, 'pe_ttm': 0.0, 'pe_percent': 50.0, 'div_yield': '0.00%'
                 }
-                save_config(st.session_state.fund_config)
-                st.success(f"🎉 基金 【{add_code} - {add_name}】 已成功永久添加！")
+                save_config(st.session_state.pure_config)
                 st.rerun()
+            else: st.error("输入有误")
 
+elif op_mode == "🗑️ 移除当前卡片":
+    st.warning(f"确定要从看板中移除基金： [{target_code}] {st.session_state.pure_config[target_code]['name']} 吗？")
+    if st.button("💥 确认擦除卡片"):
+        del st.session_state.pure_config[target_code]
+        save_config(st.session_state.pure_config)
+        st.rerun()
 
-# --- 3. 多维增量穿透大盘 ---
-st.markdown("<hr>", unsafe_allow_html=True)
-st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
-
-current_db = load_local_history(edit_code)
-
-if current_db:
-    df_raw = pd.DataFrame(current_db)
-    df_raw['日期'] = pd.to_datetime(df_raw['日期'])
-    
-    st.markdown("**📉 历史趋势全动态走势图（单指滑动可查看精准日期与净值）**")
-    df_chart = df_raw.set_index('日期').sort_index()[['单位净值']]
-    st.line_chart(df_chart, x_label="交易日期", y_label="基金单位净值")
-    
-    df_raw['年份'] = df_raw['日期'].dt.year
-    df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
-    
-    t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
-    
-    with t_year:
-        df_year = df_raw.groupby('年份').agg(该年记录天数=('日期', 'count'), 期间涨跌波动=('净值增长率', 'sum'), 期间最高单位净值=('单位净值', 'max'), 期间最低单位净值=('单位净值', 'min')).reset_index().sort_values(by='年份', ascending=False)
-        df_year['期间涨跌波动'] = df_year['期间涨跌波动'].map(lambda x: f"{x:.2f}%")
-        st.dataframe(df_year, use_container_width=True, hide_index=True)
-        
-    with t_month:
-        df_month = df_raw.groupby('月份').agg(月度平均价中枢=('单位净值', 'mean'), 当月最高价边界=('单位净值', 'max'), 月度累计波动幅=('净值增长率', 'sum')).reset_index().sort_values(by='月份', ascending=False)
-        df_month['月度平均价中枢'] = df_month['月度平均价中枢'].map(lambda x: f"{x:.4f}")
-        df_month['当月最高价边界'] = df_month['当月最高价边界'].map(lambda x: f"{x:.4f}")
-        df_month['月度累计波动幅'] = df_month['月度累计波动幅'].map(lambda x: f"{x:.2f}%")
-        st.dataframe(df_month, use_container_width=True, hide_index=True)
-        
-    with t_day:
-        df_display = df_raw.copy().sort_values(by='日期', ascending=False)
-        df_display['日期'] = df_display['日期'].dt.strftime('%Y-%m-%d')
-        df_display['净值增长率'] = df_display['净值增长率'].map(lambda x: f"{x:.2f}%")
-        st.dataframe(df_display[['日期', '单位净值', '累计净值', '净值增长率']], use_container_width=True, hide_index=True)
-else:
-    st.info("💡 当前该基金本地总库为空。请在控制台切换到【🔄 🛠️ 智能批量搬家工作台】触发多页搬运，一键建立图表！")
+st.markdown('</div>', unsafe_allow_html=True)
