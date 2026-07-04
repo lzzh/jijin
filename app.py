@@ -111,7 +111,6 @@ current_info = st.session_state.fund_config[edit_code]
 
 op_mode = st.radio("请选择操作功能：", ["📝 修改定投计划", "🔄 🛠️ 智能批量搬家工作台", "✨ 快捷添加新基金"], horizontal=True)
 
-# 功能 A：修改计划
 if op_mode == "📝 修改定投计划":
     with st.form("my_edit_form"):
         col_p, col_a = st.columns(2)
@@ -125,83 +124,49 @@ if op_mode == "📝 修改定投计划":
             st.success("🎉 配置已成功保存！看盘卡片已同步刷新。")
             st.rerun()
 
-# 功能 B：全员一键多页连挖数据同步（核心升级）
 elif op_mode == "🔄 🛠️ 智能批量搬家工作台":
     st.markdown("#### 🚀 全员多页联动增量搬运机制")
-    st.caption("设置下方深度后，点击启动按钮，系统会【全自动】遍历自选池里的所有基金，并按顺序抓取指定页码，无需挨个点按钮。")
-    
-    # 动态滑块：决定这次一键搬家搬几页
-    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2, help="1页=40天数据。选择3页意味着全员自动下载第1、2、3页，合力斩获120天历史！")
+    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2)
     
     if st.button(f"🔥 启动：全员一键追溯前 {max_pages} 页历史数据"):
         all_codes = list(st.session_state.fund_config.keys())
         total_steps = len(all_codes) * max_pages
         step_now = 0
-        
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        summary_results = {}
         for code in all_codes:
-            summary_results[code] = 0
-            
-        # 开始双重嵌套大循环：先基金，后页码
-        for code in all_codes:
-            f_name = st.session_state.fund_config[code]['name']
             for p_idx in range(1, max_pages + 1):
                 step_now += 1
-                status_text.markdown(f"⏳ 正在搬运：**{f_name}** 的第 **{p_idx}** 页数据...")
-                
-                # 执行搬家
-                _, added_num, _ = move_ants_history(code, page_index=p_idx)
-                summary_results[code] += added_num
-                
-                # 更新进度条
+                status_text.markdown(f"⏳ 正在搬运：**{st.session_state.fund_config[code]['name']}** 的第 **{p_idx}** 页数据...")
+                move_ants_history(code, page_index=p_idx)
                 progress_bar.progress(step_now / total_steps)
-                time.sleep(0.25) # 极小延时保护云端环境安全
+                time.sleep(0.25)
                 
         status_text.empty()
-        st.success(f"🎉 【多页连击搬运大获全胜！】已为你成功合并、去重并持久化以下增量数据：")
-        for code, count in summary_results.items():
-            st.markdown(f"• 基金 **{code}** ({st.session_state.fund_config[code]['name']})：本轮净增 **{count}** 天历史价格账本！")
+        st.success(f"🎉 【多页连击搬运大获全胜！】数据已同步。")
         st.rerun()
 
-# 功能 C：动态添加新基金
 else:
     with st.form("add_new_fund_form"):
         st.markdown("**✨ 添加一只核心资产基金到自选池**")
         add_code = st.text_input("请输入6位基金代码（例如：001630）：", max_chars=6)
         add_name = st.text_input("请输入基金简称（例如：天弘计算机C）：")
         add_index = st.text_input("关联跟踪的指数名称（例如：计算机指数）：")
-        
         col_ap1, col_ap2 = st.columns(2)
         with col_ap1: add_period = st.text_input("设定定投周期：", value="每周二")
         with col_ap2: add_amount = st.number_input("设定定投金额(元)：", value=100, step=10)
-            
         submit_add = st.form_submit_button("➕ 确认添加这只基金")
         if submit_add:
-            if len(add_code) != 6 or not add_name:
-                st.error("⚠️ 请输入正确的6位基金代码和基金简称！")
-            elif add_code in st.session_state.fund_config:
-                st.error("💡 该基金已在你的清单中，无需重复添加。")
+            if len(add_code) != 6 or not add_name: st.error("⚠️ 请输入正确的代码和简称！")
             else:
-                st.session_state.fund_config[add_code] = {
-                    'name': add_name,
-                    'index_name': add_index if add_index else '自定义指数',
-                    'period': add_period,
-                    'amount': add_amount,
-                    'pe_ttm': 20.0,
-                    'pe_percent': 50.0,
-                    'div_yield': '1.50%',
-                    'status': '新入库跟踪',
-                    'base_strategy': '🎯 刚刚加入自选池。建议【严格执行常规计划 {plan}】。'
-                }
+                st.session_state.fund_config[add_code] = {'name': add_name, 'index_name': add_index if add_index else '自定义指数', 'period': add_period, 'amount': add_amount, 'pe_ttm': 20.0, 'pe_percent': 50.0, 'div_yield': '1.50%', 'status': '新入库跟踪', 'base_strategy': '🎯 刚刚加入自选池。建议【严格执行常规计划 {plan}】。'}
                 save_config(st.session_state.fund_config)
-                st.success(f"🎉 基金 【{add_code} - {add_name}】 已成功永久添加！")
+                st.success(f"🎉 基金永久添加成功！")
                 st.rerun()
 
 
-# --- 3. 多维增量穿透大盘 ---
+# --- 3. 多维增量穿透大盘 + 🎨【色彩重构】定制多轨折线图 ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
@@ -210,14 +175,41 @@ current_db = load_local_history(edit_code)
 if current_db:
     df_raw = pd.DataFrame(current_db)
     df_raw['日期'] = pd.to_datetime(df_raw['日期'])
-    
-    st.markdown("**📉 历史趋势全动态走势图（单指滑动可查看精准日期与净值）**")
-    df_chart = df_raw.set_index('日期').sort_index()[['单位净值']]
-    st.line_chart(df_chart, x_label="交易日期", y_label="基金单位净值")
-    
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
     
+    st.markdown("**📉 历史趋势全动态走势图（🚨红线：最高价边界 | 🎯绿线：月度平均中枢）**")
+    
+    # 重新计算月度指标
+    df_metrics = df_raw.groupby('月份').agg(
+        月度平均价中枢=('单位净值', 'mean'),
+        当月最高价边界=('单位净值', 'max')
+    ).reset_index()
+    
+    df_chart_src = pd.merge(df_raw, df_metrics, on='月份', how='left')
+    
+    # 重新整理图表列顺序
+    df_chart_final = df_chart_src.set_index('日期').sort_index()[[
+        '单位净值', '月度平均价中枢', '当月最高价边界'
+    ]]
+    
+    # 🎨 核心色彩重写映射字典：匹配直觉的高级看盘调色盘
+    color_map = {
+        '单位净值': '#1F77B4',       # 经典科技蓝：主趋势线
+        '月度平均价中枢': '#25A15C',   # 安全通行绿：中枢抄底参考线 🎯
+        '当月最高价边界': '#FF4B4B'    # 警戒摸顶红：天花板防线 🚨
+    }
+    
+    # 渲染带有定制颜色属性的交互式图表
+    st.line_chart(
+        df_chart_final, 
+        x_label="交易日期", 
+        y_label="基金净值及多维边界参考",
+        color=[color_map[col] for col in df_chart_final.columns]
+    )
+    st.caption("💡 读图新指南：当【蓝色净值线】下穿【绿色中枢线】时，意味着价格低于月度平均水平，信号安全；若逼近【红色天花板】，需警惕回调风险。")
+    
+    # 三选项卡数据面板
     t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
     
     with t_year:
