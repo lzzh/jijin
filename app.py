@@ -4,7 +4,8 @@ import urllib.request
 import json
 import os
 import time
-import altair as alt  # 💡 重新引入 Altair 引擎，实现纵轴的绝对控制
+import random  # 💡 引入随机库，用于破解东财的无报错软限流
+import altair as alt
 
 # 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
@@ -64,30 +65,50 @@ def save_local_history(fund_code, data_list):
 def move_ants_history(fund_code, page_index=1):
     local_data = load_local_history(fund_code)
     try:
-        url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize=40"
+        # 💡 动态时间戳伪装，防止东财服务器识别出是静态代码请求
+        timestamp = int(time.time() * 1000)
+        url = f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={fund_code}&pageIndex={page_index}&pageSize=40&_={timestamp}"
+        
         req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+        # 💡 升级版高级浏览器请求头伪装
+        req.add_header('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         req.add_header('Referer', f'https://fundf10.eastmoney.com/lsjz_{fund_code}.html')
-        with urllib.request.urlopen(req, timeout=3) as response: html = response.read().decode('utf-8')
+        
+        with urllib.request.urlopen(req, timeout=5) as response: 
+            html = response.read().decode('utf-8')
+            
         data = json.loads(html)
-        if data and data.get("Data") is None: return local_data, 0, "限流"
+        if not data or data.get("Data") is None or "LSJZList" not in data["Data"]:
+            return local_data, 0, "接口限流/无数据"
+            
         raw_list = data["Data"]["LSJZList"]
+        if not raw_list:
+            return local_data, 0, "空列表数据"
+            
         new_count = 0
         existing_dates = {item['日期'] for item in local_data}
+        
         for item in raw_list:
             if not item.get("FSRQ") or not item.get("DWJZ"): continue
             date_str = item["FSRQ"]
             if date_str not in existing_dates:
                 try: growth = float(item["JZZZL"]) if item.get("JZZZL") else 0.0
                 except: growth = 0.0
-                local_data.append({"日期": date_str, "单位净值": float(item["DWJZ"]), "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]), "净值增长率": growth})
+                local_data.append({
+                    "日期": date_str, 
+                    "单位净值": float(item["DWJZ"]), 
+                    "累计净值": float(item["LJJZ"]) if item.get("LJJZ") else float(item["DWJZ"]), 
+                    "净值增长率": growth
+                })
                 new_count += 1
+                
         if new_count > 0:
             local_data = sorted(local_data, key=lambda x: x['日期'], reverse=True)
             save_local_history(fund_code, local_data)
             return local_data, new_count, "成功"
-        return local_data, 0, "无新数据"
-    except Exception as e: return local_data, 0, f"波动({str(e)})"
+        return local_data, 0, "无最新数据"
+    except Exception as e: 
+        return local_data, 0, f"断流({str(e)})"
 
 
 # --- 1. 全景卡片看板 ---
@@ -126,26 +147,37 @@ if op_mode == "📝 修改定投计划":
             st.rerun()
 
 elif op_mode == "🔄 🛠️ 智能批量搬家工作台":
-    st.markdown("#### 🚀 全员多页联动增量搬运机制")
-    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（页数）：", min_value=1, max_value=5, value=2)
+    st.markdown("#### 🚀 全员多页联动抗反爬增量搬运机制")
+    max_pages = st.slider("🎚️ 请选择本次全员搬运的深度（建议设为 2-3 页保证最新数据被网罗）：", min_value=1, max_value=5, value=2)
     
-    if st.button(f"🔥 启动：全员一键追溯前 {max_pages} 页历史数据"):
+    if st.button(f"🔥 启动：全员一键抗限流追溯"):
         all_codes = list(st.session_state.fund_config.keys())
         total_steps = len(all_codes) * max_pages
         step_now = 0
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        total_new_downloaded = 0
+        
         for code in all_codes:
             for p_idx in range(1, max_pages + 1):
                 step_now += 1
-                status_text.markdown(f"⏳ 正在搬运：**{st.session_state.fund_config[code]['name']}** 的第 **{p_idx}** 页数据...")
-                move_ants_history(code, page_index=p_idx)
+                status_text.markdown(f"⏳ 正在智能排队搬运：**{st.session_state.fund_config[code]['name']}** 的第 **{p_idx}** 页...")
+                
+                _, downloaded, status = move_ants_history(code, page_index=p_idx)
+                total_new_downloaded += downloaded
+                
                 progress_bar.progress(step_now / total_steps)
-                time.sleep(0.25)
+                
+                # 💡 破解限流杀手锏：随机延迟休眠 1.5 ~ 2.8 秒，打乱请求节奏
+                sleep_time = random.uniform(1.5, 2.8)
+                time.sleep(sleep_time)
                 
         status_text.empty()
-        st.success(f"🎉 【多页连击搬运大获全胜！】数据已同步。")
+        if total_new_downloaded > 0:
+            st.success(f"🎉 【智能增量搬运大获全胜！】本次成功突破接口风控，网罗捕获到 {total_new_downloaded} 条最新净值数据！")
+        else:
+            st.info("📊 搬运完成。东财接口未报错，本地数据库里的净值已经是最新状态（或者接口当前正处于高峰期保护，请稍后再试）。")
         st.rerun()
 
 else:
@@ -167,7 +199,7 @@ else:
                 st.rerun()
 
 
-# --- 3. 多维增量穿透大盘 + 🛠️【完全体】时间切片与自动/手动控轴引擎 ---
+# --- 3. 多维增量穿透大盘 + 时间切片与自动/手动控轴引擎 ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
@@ -179,14 +211,14 @@ if current_db:
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
     
-    # 🚨 防御重构的核心：先在全局未过滤的总库中算出各月份的完整参考指标，100% 避免 KeyError
+    # 在全局总库中预先算好完整的参考指标
     df_global_metrics = df_raw.groupby('月份').agg(
         月度平均价中枢=('单位净值', 'mean'),
         当月最高价边界=('单位净值', 'max')
     ).reset_index()
     df_raw_enriched = pd.merge(df_raw, df_global_metrics, on='月份', how='left')
     
-    # 时间跨度快捷切换按钮
+    # 时间跨度快捷切换
     time_frame = st.radio(
         "🎛️ 请选择图表视窗的时间跨度：",
         ["📅 近1个月", "📅 近3个月", "📅 近6个月", "📅 近1年", "🌍 全部数据"],
@@ -209,12 +241,11 @@ if current_db:
     if not df_filtered.empty:
         st.markdown(f"**📉 走势透视（当前视窗：{time_frame} | 🚨红线：最高价边界 | 🎯绿线：月度平均中枢）**")
         
-        # 🛠️ --- 核心功能回归：纵轴上下限手动/自动调节面板 ---
+        # 纵轴上下限手动/自动调节面板
         c_axis1, c_axis2, c_axis3 = st.columns([1, 1, 1])
         with c_axis1:
-            is_manual_y = st.checkbox("🔒 启用手动锁定纵轴", value=False, help="未勾选时系统将执行【全自动紧凑缩放】，完美裁剪底部空白放大波动。勾选后可自由强制定义轴上下限。")
+            is_manual_y = st.checkbox("🔒 启用手动锁定纵轴", value=False)
         
-        # 动态算出当前过滤视窗内数据的极值，为手动输入框提供极其精准的默认辅助值
         current_min = float(df_filtered['单位净值'].min())
         current_max = float(df_filtered['当月最高价边界'].max())
         padding = (current_max - current_min) * 0.08 if current_max != current_min else 0.05
@@ -224,7 +255,6 @@ if current_db:
         with c_axis3:
             manual_max = st.number_input("📈 自定义 Y 轴上限", value=round(current_max + padding, 2), step=0.02, disabled=not is_manual_y)
 
-        # 🎯 熔断转换成 Altair 渲染的长表长格式（Melt）
         df_melted = df_filtered.melt(
             id_vars=['日期'], 
             value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'],
@@ -232,32 +262,27 @@ if current_db:
             value_name='净值数值'
         )
 
-        # 🎯 Altair 纵轴区间动态自适应裁剪算法
         if is_manual_y:
             y_scale = alt.Scale(domain=[manual_min, manual_max], clamp=True)
         else:
-            # zero=False 是灵魂所在：未锁定手动时，自动裁剪掉底部多余空白，让曲线瞬间充满屏幕空间
             y_scale = alt.Scale(zero=False, padding=15)
 
-        # 🎨 严格执行你指定的红绿大盘配色映射规则
         color_scale = alt.Scale(
             domain=['单位净值', '月度平均价中枢', '当月最高价边界'],
             range=['#1F77B4', '#25A15C', '#FF4B4B']
         )
 
-        # 🚀 渲染高级交互控轴图表
         chart = alt.Chart(df_melted).mark_line().encode(
             x=alt.X('日期:T', title='交易日期'),
             y=alt.Y('净值数值:Q', title='基金净值及多维边界参考', scale=y_scale),
             color=alt.Color('指标类型:N', scale=color_scale, legend=alt.Legend(title="图例指引"))
         ).properties(
             height=380
-        ).interactive() # 支持手指滑动及缩放
+        ).interactive()
 
         st.altair_chart(chart, use_container_width=True)
-        st.caption("💡 读图指南：当【蓝色净值】砸穿【绿色均值线】时，往往是性价比极高、极度安全的吸筹区间；若贴近【红色边界线】则需克制。")
     else:
-        st.warning("⚠️ 当前选中的短时间范围内暂无搬运到的历史数据，请切换到更长跨度或前往批量搬家工作台下载。")
+        st.warning("⚠️ 当前选中的短时间范围内暂无搬运到的历史数据。")
         
     # 三选项卡数据面板
     t_year, t_month, t_day = st.tabs(["📅 累计年度表现", "🌙 累计月度价格中枢", "📄 完整日流水账明细"])
