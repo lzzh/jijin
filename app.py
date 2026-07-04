@@ -4,6 +4,7 @@ import urllib.request
 import json
 import os
 import time
+import altair as alt  # 💡 重新引入 Altair 引擎，实现纵轴的绝对控制
 
 # 设置网页布局
 st.set_page_config(page_title="我的智能化定投监控看板", layout="wide")
@@ -116,7 +117,7 @@ if op_mode == "📝 修改定投计划":
         col_p, col_a = st.columns(2)
         with col_p: new_period = st.text_input("定投周期：", value=current_info['period'])
         with col_a: new_amount = st.number_input("定投金额 (元)：", value=int(current_info['amount']), step=10)
-        submit_plan = st.form_submit_button("💾 确认更新并永久保存计划")  # 💡 修复：恢复正确原生API
+        submit_plan = st.form_submit_button("💾 确认更新并永久保存计划")
         if submit_plan:
             st.session_state.fund_config[edit_code]['period'] = new_period
             st.session_state.fund_config[edit_code]['amount'] = new_amount
@@ -166,7 +167,7 @@ else:
                 st.rerun()
 
 
-# --- 3. 多维增量穿透大盘 + 🛠️【零报错·防御型】多尺度多参考线渲染控制台 ---
+# --- 3. 多维增量穿透大盘 + 🛠️【完全体】时间切片与自动/手动控轴引擎 ---
 st.markdown("<hr>", unsafe_allow_html=True)
 st.subheader(f"🔍 穿透明细：【{st.session_state.fund_config[edit_code]['name']}】多维透视面板")
 
@@ -178,14 +179,14 @@ if current_db:
     df_raw['年份'] = df_raw['日期'].dt.year
     df_raw['月份'] = df_raw['日期'].dt.strftime('%Y-%m')
     
-    # 🎯 全局静态计算：先在总库里把各月份的“最高价”和“平均价”打散做成基准线，彻底杜绝局部筛选导致的 KeyError
+    # 🚨 防御重构的核心：先在全局未过滤的总库中算出各月份的完整参考指标，100% 避免 KeyError
     df_global_metrics = df_raw.groupby('月份').agg(
         月度平均价中枢=('单位净值', 'mean'),
         当月最高价边界=('单位净值', 'max')
     ).reset_index()
     df_raw_enriched = pd.merge(df_raw, df_global_metrics, on='月份', how='left')
     
-    # 时间跨度选择 Radio 按钮组
+    # 时间跨度快捷切换按钮
     time_frame = st.radio(
         "🎛️ 请选择图表视窗的时间跨度：",
         ["📅 近1个月", "📅 近3个月", "📅 近6个月", "📅 近1年", "🌍 全部数据"],
@@ -208,27 +209,53 @@ if current_db:
     if not df_filtered.empty:
         st.markdown(f"**📉 走势透视（当前视窗：{time_frame} | 🚨红线：最高价边界 | 🎯绿线：月度平均中枢）**")
         
-        # 整理成完美画图矩阵，锁定列名顺序
-        df_chart_final = df_filtered.set_index('日期').sort_index()[[
-            '单位净值', '月度平均价中枢', '当月最高价边界'
-        ]]
+        # 🛠️ --- 核心功能回归：纵轴上下限手动/自动调节面板 ---
+        c_axis1, c_axis2, c_axis3 = st.columns([1, 1, 1])
+        with c_axis1:
+            is_manual_y = st.checkbox("🔒 启用手动锁定纵轴", value=False, help="未勾选时系统将执行【全自动紧凑缩放】，完美裁剪底部空白放大波动。勾选后可自由强制定义轴上下限。")
         
-        # 🎨 稳健的红绿彩色映射器字典
-        color_map = {
-            '单位净值': '#1F77B4',       # 经典科技蓝
-            '月度平均价中枢': '#25A15C',   # 抄底安全绿 🎯
-            '当月最高价边界': '#FF4B4B'    # 警惕高位红 🚨
-        }
+        # 动态算出当前过滤视窗内数据的极值，为手动输入框提供极其精准的默认辅助值
+        current_min = float(df_filtered['单位净值'].min())
+        current_max = float(df_filtered['当月最高价边界'].max())
+        padding = (current_max - current_min) * 0.08 if current_max != current_min else 0.05
         
-        # 🛠️ 调轴控制器（采用原生 st.line_chart 的稳健模式，zero=False 即可实现自动上下限裁剪放大的高维体验）
-        # 针对 Streamlit 新版本，可以用内置字典指定各列曲线颜色，完全摆脱对外部复杂库的依赖，100% 免疫崩溃
-        st.line_chart(
-            df_chart_final, 
-            x_label="交易日期", 
-            y_label="基金净值及多维边界参考",
-            color=[color_map[col] for col in df_chart_final.columns]
+        with c_axis2:
+            manual_min = st.number_input("📉 自定义 Y 轴下限", value=round(current_min - padding, 2), step=0.02, disabled=not is_manual_y)
+        with c_axis3:
+            manual_max = st.number_input("📈 自定义 Y 轴上限", value=round(current_max + padding, 2), step=0.02, disabled=not is_manual_y)
+
+        # 🎯 熔断转换成 Altair 渲染的长表长格式（Melt）
+        df_melted = df_filtered.melt(
+            id_vars=['日期'], 
+            value_vars=['单位净值', '月度平均价中枢', '当月最高价边界'],
+            var_name='指标类型', 
+            value_name='净值数值'
         )
-        st.caption("💡 读图新指南：图表已开启【Y轴自适应精准缩放】，底部空白已自动裁剪，波动细节已放大十倍！当蓝色下穿绿线时，信号安全。")
+
+        # 🎯 Altair 纵轴区间动态自适应裁剪算法
+        if is_manual_y:
+            y_scale = alt.Scale(domain=[manual_min, manual_max], clamp=True)
+        else:
+            # zero=False 是灵魂所在：未锁定手动时，自动裁剪掉底部多余空白，让曲线瞬间充满屏幕空间
+            y_scale = alt.Scale(zero=False, padding=15)
+
+        # 🎨 严格执行你指定的红绿大盘配色映射规则
+        color_scale = alt.Scale(
+            domain=['单位净值', '月度平均价中枢', '当月最高价边界'],
+            range=['#1F77B4', '#25A15C', '#FF4B4B']
+        )
+
+        # 🚀 渲染高级交互控轴图表
+        chart = alt.Chart(df_melted).mark_line().encode(
+            x=alt.X('日期:T', title='交易日期'),
+            y=alt.Y('净值数值:Q', title='基金净值及多维边界参考', scale=y_scale),
+            color=alt.Color('指标类型:N', scale=color_scale, legend=alt.Legend(title="图例指引"))
+        ).properties(
+            height=380
+        ).interactive() # 支持手指滑动及缩放
+
+        st.altair_chart(chart, use_container_width=True)
+        st.caption("💡 读图指南：当【蓝色净值】砸穿【绿色均值线】时，往往是性价比极高、极度安全的吸筹区间；若贴近【红色边界线】则需克制。")
     else:
         st.warning("⚠️ 当前选中的短时间范围内暂无搬运到的历史数据，请切换到更长跨度或前往批量搬家工作台下载。")
         
