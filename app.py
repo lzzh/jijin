@@ -674,34 +674,74 @@ if op_mode == "📝 修改定投计划":
 
 elif op_mode == "🔄 智能搬家":
     st.markdown("**全员历史净值追溯**（爬取东方财富，含防反爬延迟）")
-    max_pages = st.slider("追溯深度（页数，每页40条）", 1, 5, 2)
-    if st.button("🚀 启动全员搬运", type="primary"):
-        all_codes = list(st.session_state.fund_config.keys())
-        total_steps = len(all_codes) * max_pages
-        step_now = 0
-        bar = st.progress(0)
-        log = st.empty()
-        total_new = 0
-        log_lines = []
-        for code in all_codes:
-            fname = st.session_state.fund_config[code]['name']
-            for p in range(1, max_pages + 1):
-                step_now += 1
-                log.markdown(f"⏳ `[{code}]` {fname} · 第 {p}/{max_pages} 页…")
-                _, n, msg = move_ants_history(code, page_index=p)
-                total_new += n
-                bar.progress(step_now / total_steps)
-                icon = "✅" if n > 0 else ("ℹ️" if "无新数据" in msg else "⚠️")
-                log_lines.append(f"{icon} `[{code}]` 第{p}页：{msg}（新增 {n} 条）")
-                time.sleep(random.uniform(1.5, 2.8))
-        log.empty()
-        result_text = "\n\n".join(log_lines)
+
+    # 持久化显示上次运行结果
+    if 'migration_log' in st.session_state and st.session_state.migration_log:
+        total_new = st.session_state.migration_log.get('total_new', 0)
+        lines = st.session_state.migration_log.get('lines', [])
         if total_new > 0:
-            st.success(f"✅ 共写入 {total_new} 条新数据")
+            st.success(f"✅ 上次搬运共写入 {total_new} 条新数据")
         else:
-            st.warning("未写入新数据，详见下方日志")
-        st.markdown(result_text)
-        st.rerun()
+            st.warning("⚠️ 上次搬运未写入新数据，详见下方日志")
+        for l in lines:
+            st.markdown(l)
+        if st.button("🗑️ 清除日志"):
+            st.session_state.migration_log = {}
+            st.rerun()
+        st.markdown("---")
+
+    max_pages = st.slider("追溯深度（页数，每页40条）", 1, 5, 2)
+
+    col_test, col_run = st.columns(2)
+    with col_test:
+        if st.button("🔍 先测试网络连通性"):
+            with st.spinner("测试中…"):
+                test_url = "https://api.fund.eastmoney.com/f10/lsjz?fundCode=008163&pageIndex=1&pageSize=5"
+                try:
+                    import requests as rlib
+                    r = rlib.get(test_url, headers={
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': 'https://fundf10.eastmoney.com/lsjz_008163.html',
+                        'Accept': 'application/json, */*',
+                    }, timeout=15)
+                    if r.status_code == 200 and 'LSJZList' in r.text:
+                        st.success(f"✅ 网络正常，接口可达（HTTP {r.status_code}）")
+                    else:
+                        st.error(f"❌ 接口响应异常：HTTP {r.status_code}，内容：{r.text[:100]}")
+                except Exception as e:
+                    st.error(f"❌ 连接失败：{e}")
+
+    with col_run:
+        if st.button("🚀 启动全员搬运", type="primary"):
+            all_codes = list(st.session_state.fund_config.keys())
+            total_steps = len(all_codes) * max_pages
+            step_now = 0
+            bar = st.progress(0)
+            live_status = st.empty()
+            total_new = 0
+            log_lines = []
+
+            for code in all_codes:
+                fname = st.session_state.fund_config[code]['name']
+                for p in range(1, max_pages + 1):
+                    step_now += 1
+                    live_status.info(f"⏳ [{code}] {fname} · 第 {p}/{max_pages} 页…")
+                    _, n, msg = move_ants_history(code, page_index=p)
+                    total_new += n
+                    bar.progress(step_now / total_steps)
+                    icon = "✅" if n > 0 else ("ℹ️" if "无新数据" in msg else "⚠️")
+                    log_lines.append(f"{icon} **[{code}]** 第{p}页：{msg}（+{n}条）")
+                    time.sleep(random.uniform(1.5, 2.8))
+
+            live_status.empty()
+            bar.empty()
+
+            # 结果存入 session_state，刷新后仍可见
+            st.session_state.migration_log = {
+                'total_new': total_new,
+                'lines': log_lines,
+            }
+            st.rerun()
 
 elif op_mode == "📋 批量导入":
     st.markdown(f"""
