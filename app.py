@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import json, os, time, random
+import json, os, time, random, base64
 import altair as alt
 
 try:
@@ -13,7 +13,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════
 #  配置
 # ══════════════════════════════════════════════════════════
-st.set_page_config(page_title="定投监控看板", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="定投监控看板", layout="wide", initial_sidebar_state="collapsed")
 
 CONFIG_FILE  = "fund_config.json"
 HISTORY_DIR  = "fund_history"
@@ -57,10 +57,21 @@ def load_config():
             return json.load(open(CONFIG_FILE, encoding='utf-8'))
         except Exception:
             pass
+    content, _ = gh_read(CONFIG_FILE)
+    if content:
+        try:
+            data = json.loads(content)
+            json.dump(data, open(CONFIG_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            return data
+        except Exception:
+            pass
     return {k: dict(v) for k, v in DEFAULT_CONFIG.items()}
 
 def save_config(cfg):
-    json.dump(cfg, open(CONFIG_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    content = json.dumps(cfg, ensure_ascii=False, indent=2)
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        f.write(content)
+    gh_write(CONFIG_FILE, content)
 
 def load_history(code):
     p = os.path.join(HISTORY_DIR, f'{code}.json')
@@ -69,12 +80,22 @@ def load_history(code):
             return json.load(open(p, encoding='utf-8'))
         except Exception:
             pass
+    content, _ = gh_read(f'{HISTORY_DIR}/{code}.json')
+    if content:
+        try:
+            data = json.loads(content)
+            json.dump(data, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            return data
+        except Exception:
+            pass
     return []
 
 def save_history(code, data):
     data = sorted(data, key=lambda x: x['日期'], reverse=True)
-    json.dump(data, open(os.path.join(HISTORY_DIR, f'{code}.json'), 'w', encoding='utf-8'),
-              ensure_ascii=False, indent=2)
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    with open(os.path.join(HISTORY_DIR, f'{code}.json'), 'w', encoding='utf-8') as f:
+        f.write(content)
+    gh_write(f'{HISTORY_DIR}/{code}.json', content)
 
 def load_cursors():
     if os.path.exists(CURSOR_FILE):
@@ -82,10 +103,21 @@ def load_cursors():
             return json.load(open(CURSOR_FILE, encoding='utf-8'))
         except Exception:
             pass
+    content, _ = gh_read(CURSOR_FILE)
+    if content:
+        try:
+            data = json.loads(content)
+            json.dump(data, open(CURSOR_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            return data
+        except Exception:
+            pass
     return {}
 
 def save_cursors(c):
-    json.dump(c, open(CURSOR_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    content = json.dumps(c, ensure_ascii=False, indent=2)
+    with open(CURSOR_FILE, 'w', encoding='utf-8') as f:
+        f.write(content)
+    gh_write(CURSOR_FILE, content)
 
 def load_pe_history(code):
     p = os.path.join(PE_HIST_DIR, f'{code}.json')
@@ -94,11 +126,21 @@ def load_pe_history(code):
             return json.load(open(p, encoding='utf-8'))
         except Exception:
             pass
+    content, _ = gh_read(f'{PE_HIST_DIR}/{code}.json')
+    if content:
+        try:
+            data = json.loads(content)
+            json.dump(data, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            return data
+        except Exception:
+            pass
     return []
 
 def save_pe_history(code, records):
-    json.dump(records, open(os.path.join(PE_HIST_DIR, f'{code}.json'), 'w', encoding='utf-8'),
-              ensure_ascii=False, indent=2)
+    content = json.dumps(records, ensure_ascii=False, indent=2)
+    with open(os.path.join(PE_HIST_DIR, f'{code}.json'), 'w', encoding='utf-8') as f:
+        f.write(content)
+    gh_write(f'{PE_HIST_DIR}/{code}.json', content)
 
 if 'cfg' not in st.session_state:
     st.session_state.cfg = load_config()
@@ -106,6 +148,81 @@ if 'cfg' not in st.session_state:
 # ══════════════════════════════════════════════════════════
 #  网络工具
 # ══════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════
+#  GitHub 持久化层（替代 Streamlit Cloud 临时文件系统）
+#  Secrets 需配置：GITHUB_TOKEN / GITHUB_REPO / GITHUB_BRANCH(可选)
+# ══════════════════════════════════════════════════════════
+def _gh_enabled():
+    try:
+        return bool(st.secrets.get("GITHUB_TOKEN") and st.secrets.get("GITHUB_REPO"))
+    except Exception:
+        return False
+
+def _gh_headers():
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "") or ""
+    except Exception:
+        token = ""
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+
+def gh_read(path):
+    """从 GitHub 仓库读取文件，返回 (content_str, sha) 或 (None, None)"""
+    if not _gh_enabled():
+        return None, None
+    try:
+        repo   = st.secrets.get("GITHUB_REPO", "")
+        branch = st.secrets.get("GITHUB_BRANCH", "main") or "main"
+        url    = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
+        if HAS_REQUESTS:
+            r = rlib.get(url, headers=_gh_headers(), timeout=10)
+            if r.status_code == 200:
+                d = r.json()
+                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
+        else:
+            req = urllib.request.Request(url)
+            for k, v in _gh_headers().items():
+                req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                d = json.loads(resp.read())
+                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
+    except Exception:
+        pass
+    return None, None
+
+def gh_write(path, content_str):
+    """将文件写入 GitHub 仓库（自动获取 SHA，新建或覆盖均可）"""
+    if not _gh_enabled():
+        return False
+    try:
+        _, sha   = gh_read(path)
+        repo     = st.secrets.get("GITHUB_REPO", "")
+        branch   = st.secrets.get("GITHUB_BRANCH", "main") or "main"
+        url      = f"https://api.github.com/repos/{repo}/contents/{path}"
+        payload  = {
+            "message": f"auto: update {path}",
+            "content": base64.b64encode(content_str.encode('utf-8')).decode(),
+            "branch":  branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        if HAS_REQUESTS:
+            r = rlib.put(url, headers=_gh_headers(), json=payload, timeout=20)
+            return r.status_code in (200, 201)
+        else:
+            body = json.dumps(payload).encode('utf-8')
+            h = {**_gh_headers(), "Content-Type": "application/json"}
+            req = urllib.request.Request(url, data=body, method="PUT")
+            for k, v in h.items():
+                req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.status in (200, 201)
+    except Exception:
+        pass
+    return False
+
 _HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
                    'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -291,8 +408,6 @@ def fetch_index_valuation(secid):
 
     return result
 
-    return result
-
 def fetch_nav_page(code, page):
     """
     抓取基金历史净值单页（东方财富标准接口）。
@@ -444,8 +559,12 @@ st.markdown("""
 #MainMenu,footer,header{visibility:hidden}
 *{box-sizing:border-box}
 html,body,[class*="css"]{font-family:'Inter','PingFang SC',sans-serif;background:#080C12!important;color:#C9D1D9!important}
-.block-container{padding:.75rem .75rem 3rem!important;max-width:680px!important}
-@media(min-width:768px){.block-container{padding:1.5rem 2rem 2rem!important}}
+.block-container{padding:.75rem .75rem 3rem!important;max-width:720px!important;margin:0 auto!important}
+@media(min-width:768px){.block-container{padding:1.5rem 2rem 2rem!important;max-width:760px!important}}
+@media(min-width:1140px){.block-container{max-width:1200px!important;padding:1.5rem 3rem 3rem!important}}
+.cards-grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:1140px){.cards-grid{grid-template-columns:1fr 1fr;gap:14px}}
+@media(min-width:1140px){.dash-header h1{font-size:22px!important}.dash-header .sub{font-size:13px}}
 [data-testid="stVerticalBlock"]>div{gap:0!important}
 
 .dash-header{background:linear-gradient(135deg,#0D1117,#111827,#0D1117);border:1px solid #1F2937;border-radius:12px;padding:16px;margin-bottom:16px;position:relative;overflow:hidden}
@@ -460,8 +579,7 @@ html,body,[class*="css"]{font-family:'Inter','PingFang SC',sans-serif;background
 .fcard{background:#0D1117;border:1px solid #1F2937;border-radius:12px;padding:14px 14px 14px 18px;margin-bottom:10px;position:relative}
 .fcard::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 2px 2px 0}
 .fcard.low::before{background:#2DA44E}.fcard.mid::before{background:#F0A500}.fcard.high::before{background:#F85149}
-.fcard-hdr{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
-@media(min-width:480px){.fcard-hdr{flex-direction:row;justify-content:space-between;align-items:flex-start}}
+.fcard-hdr{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:12px}
 .fname{font-size:14px;font-weight:600;color:#E6EDF3;line-height:1.4}
 .fcode{font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E7681;margin-top:2px}
 .badge{background:#161B22;border:1px solid #21262D;border-radius:20px;padding:5px 12px;font-size:12px;color:#58A6FF;font-family:'JetBrains Mono',monospace;white-space:nowrap;min-height:32px;display:flex;align-items:center;align-self:flex-start}
@@ -523,39 +641,40 @@ st.markdown(f"""
 #  § 1  资产卡片
 # ══════════════════════════════════════════════════════════
 st.markdown('<div class="sec">资产配置 · 估值执行状态</div>', unsafe_allow_html=True)
-for code, info in cfg.items():
-    pe_p  = info.get('pe_percent', 50.0)
-    lvl, strategy = evaluate_strategy(pe_p, info['period'], info['amount'])
-    pc    = 'high' if pe_p >= 75 else ('low' if pe_p <= 35 else 'mid')
-    secid = info.get('index_secid')
-    pe_src = '手动' if secid is None else '自动'
-
-    st.markdown(f"""
-    <div class="fcard {lvl}">
+_cards_html = '<div class="cards-grid">'
+for _fcode, _finfo in cfg.items():
+    _pe_p  = _finfo.get('pe_percent', 50.0)
+    _lvl, _strategy = evaluate_strategy(_pe_p, _finfo['period'], _finfo['amount'])
+    _pc    = 'high' if _pe_p >= 75 else ('low' if _pe_p <= 35 else 'mid')
+    _pe_src = '手动' if _finfo.get('index_secid') is None else '自动'
+    _cards_html += f"""
+    <div class="fcard {_lvl}">
       <div class="fcard-hdr">
         <div>
-          <div class="fname">{info['name']}</div>
-          <div class="fcode">{code} · {info['index_name']}</div>
+          <div class="fname">{_finfo['name']}</div>
+          <div class="fcode">{_fcode} · {_finfo['index_name']}</div>
         </div>
-        <div class="badge">{info['period']}  {info['amount']} 元</div>
+        <div class="badge">{_finfo['period']}  {_finfo['amount']} 元</div>
       </div>
       <div class="mgrid">
         <div class="mcell">
-          <div class="mlbl">PE 百分位<br>({pe_src})</div>
-          <div class="mval {pc}">{pe_p:.1f}%</div>
+          <div class="mlbl">PE 百分位<br>({_pe_src})</div>
+          <div class="mval {_pc}">{_pe_p:.1f}%</div>
         </div>
         <div class="mcell">
           <div class="mlbl">PE TTM</div>
-          <div class="mval">{info.get('pe_ttm', 0):.2f}</div>
+          <div class="mval">{_finfo.get('pe_ttm', 0):.2f}</div>
         </div>
         <div class="mcell">
           <div class="mlbl">TTM 股息率</div>
-          <div class="mval {lvl}">{info.get('div_yield','—')}</div>
+          <div class="mval {_lvl}">{_finfo.get('div_yield','—')}</div>
         </div>
       </div>
-      <div class="sbox {lvl}">{strategy}</div>
+      <div class="sbox {_lvl}">{_strategy}</div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+_cards_html += '</div>'
+st.markdown(_cards_html, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
 #  § 2  走势图
@@ -673,6 +792,10 @@ with tab_sync:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+    if _gh_enabled():
+        st.markdown('<div class="sbox info">☁️ <b>GitHub 持久化已启用</b>：同步完成后数据自动写回仓库，重启不丢失。</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="sbox mid">⚠️ <b>GitHub 持久化未配置</b>：数据仅在本次会话有效，重启后消失。<br>请在 Streamlit Cloud → App settings → Secrets 中配置 <code>GITHUB_TOKEN</code> 和 <code>GITHUB_REPO</code>。</div>', unsafe_allow_html=True)
     st.markdown('**运行策略**：先向前追最新数据，再向后接着游标挖历史。')
     c1, c2 = st.columns(2)
     with c1:
