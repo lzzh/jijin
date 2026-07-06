@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import json, os, time, random, base64
 import altair as alt
-import html  # 新增，用于转义 HTML 特殊字符
+import html  # 关键：转义 HTML 特殊字符
 
 try:
     import requests as rlib
@@ -639,7 +639,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
-#  § 1  资产卡片
+#  § 1  资产卡片（已转义）
 # ══════════════════════════════════════════════════════════
 st.markdown('<div class="sec">资产配置 · 估值执行状态</div>', unsafe_allow_html=True)
 _cards_html = '<div class="cards-grid">'
@@ -650,7 +650,7 @@ for _fcode, _finfo in cfg.items():
     index_name = html.escape(_finfo['index_name'])
     period = html.escape(_finfo['period'])
     pe_src = html.escape('手动' if _finfo.get('index_secid') is None else '自动')
-    # 策略文本也转义，避免其中潜在的 <> 破坏 HTML
+    # 策略文本也转义
     _pe_p  = float(_finfo.get('pe_percent', 50.0))
     _lvl, _strategy = evaluate_strategy(_pe_p, _finfo['period'], _finfo['amount'])
     strategy = html.escape(_strategy)
@@ -658,7 +658,6 @@ for _fcode, _finfo in cfg.items():
     pe_ttm = _finfo.get('pe_ttm')
     pe_ttm_str = f"{pe_ttm:.2f}" if pe_ttm is not None else "—"
     div_yield = html.escape(str(_finfo.get('div_yield', '—')))
-    # 确定 PE 百分位颜色类
     _pc = 'high' if _pe_p >= 75 else ('low' if _pe_p <= 35 else 'mid')
 
     _cards_html += f"""
@@ -691,7 +690,7 @@ _cards_html += '</div>'
 st.markdown(_cards_html, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
-#  § 2  走势图
+#  § 2  走势图（未变动）
 # ══════════════════════════════════════════════════════════
 st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 st.markdown('<div class="sec">净值走势穿透</div>', unsafe_allow_html=True)
@@ -1021,4 +1020,4 @@ with tab_mgmt:
                     if os.path.exists(f):
                         os.remove(f)
                 st.success('✅ 已删除')
-                st.rerun()
+                st.rerun()   # ← 正确：无 = False
