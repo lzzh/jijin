@@ -51,6 +51,79 @@ DEFAULT_CONFIG = {
     },
 }
 
+# ══════════════════════════════════════════════════════════
+#  GitHub 持久化层（替代 Streamlit Cloud 临时文件系统）
+#  Secrets 需配置：GITHUB_TOKEN / GITHUB_REPO / GITHUB_BRANCH(可选)
+# ══════════════════════════════════════════════════════════
+def _gh_enabled():
+    try:
+        return bool(st.secrets.get("GITHUB_TOKEN") and st.secrets.get("GITHUB_REPO"))
+    except Exception:
+        return False
+
+def _gh_headers():
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "") or ""
+    except Exception:
+        token = ""
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+
+def gh_read(path):
+    """从 GitHub 仓库读取文件，返回 (content_str, sha) 或 (None, None)"""
+    if not _gh_enabled():
+        return None, None
+    try:
+        repo   = st.secrets.get("GITHUB_REPO", "")
+        branch = st.secrets.get("GITHUB_BRANCH", "main") or "main"
+        url    = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
+        if HAS_REQUESTS:
+            r = rlib.get(url, headers=_gh_headers(), timeout=10)
+            if r.status_code == 200:
+                d = r.json()
+                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
+        else:
+            req = urllib.request.Request(url)
+            for k, v in _gh_headers().items():
+                req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                d = json.loads(resp.read())
+                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
+    except Exception:
+        pass
+    return None, None
+
+def gh_write(path, content_str):
+    """将文件写入 GitHub 仓库（自动获取 SHA，新建或覆盖均可）"""
+    if not _gh_enabled():
+        return False
+    try:
+        _, sha   = gh_read(path)
+        repo     = st.secrets.get("GITHUB_REPO", "")
+        branch   = st.secrets.get("GITHUB_BRANCH", "main") or "main"
+        url      = f"https://api.github.com/repos/{repo}/contents/{path}"
+        payload  = {
+            "message": f"auto: update {path}",
+            "content": base64.b64encode(content_str.encode('utf-8')).decode(),
+            "branch":  branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        if HAS_REQUESTS:
+            r = rlib.put(url, headers=_gh_headers(), json=payload, timeout=20)
+            return r.status_code in (200, 201)
+        else:
+            body = json.dumps(payload).encode('utf-8')
+            h = {**_gh_headers(), "Content-Type": "application/json"}
+            req = urllib.request.Request(url, data=body, method="PUT")
+            for k, v in h.items():
+                req.add_header(k, v)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.status in (200, 201)
+    except Exception:
+        pass
+    return False
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
@@ -149,79 +222,6 @@ if 'cfg' not in st.session_state:
 #  网络工具
 # ══════════════════════════════════════════════════════════
 
-# ══════════════════════════════════════════════════════════
-#  GitHub 持久化层（替代 Streamlit Cloud 临时文件系统）
-#  Secrets 需配置：GITHUB_TOKEN / GITHUB_REPO / GITHUB_BRANCH(可选)
-# ══════════════════════════════════════════════════════════
-def _gh_enabled():
-    try:
-        return bool(st.secrets.get("GITHUB_TOKEN") and st.secrets.get("GITHUB_REPO"))
-    except Exception:
-        return False
-
-def _gh_headers():
-    try:
-        token = st.secrets.get("GITHUB_TOKEN", "") or ""
-    except Exception:
-        token = ""
-    if not token:
-        return {}
-    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
-
-def gh_read(path):
-    """从 GitHub 仓库读取文件，返回 (content_str, sha) 或 (None, None)"""
-    if not _gh_enabled():
-        return None, None
-    try:
-        repo   = st.secrets.get("GITHUB_REPO", "")
-        branch = st.secrets.get("GITHUB_BRANCH", "main") or "main"
-        url    = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
-        if HAS_REQUESTS:
-            r = rlib.get(url, headers=_gh_headers(), timeout=10)
-            if r.status_code == 200:
-                d = r.json()
-                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
-        else:
-            req = urllib.request.Request(url)
-            for k, v in _gh_headers().items():
-                req.add_header(k, v)
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                d = json.loads(resp.read())
-                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
-    except Exception:
-        pass
-    return None, None
-
-def gh_write(path, content_str):
-    """将文件写入 GitHub 仓库（自动获取 SHA，新建或覆盖均可）"""
-    if not _gh_enabled():
-        return False
-    try:
-        _, sha   = gh_read(path)
-        repo     = st.secrets.get("GITHUB_REPO", "")
-        branch   = st.secrets.get("GITHUB_BRANCH", "main") or "main"
-        url      = f"https://api.github.com/repos/{repo}/contents/{path}"
-        payload  = {
-            "message": f"auto: update {path}",
-            "content": base64.b64encode(content_str.encode('utf-8')).decode(),
-            "branch":  branch,
-        }
-        if sha:
-            payload["sha"] = sha
-        if HAS_REQUESTS:
-            r = rlib.put(url, headers=_gh_headers(), json=payload, timeout=20)
-            return r.status_code in (200, 201)
-        else:
-            body = json.dumps(payload).encode('utf-8')
-            h = {**_gh_headers(), "Content-Type": "application/json"}
-            req = urllib.request.Request(url, data=body, method="PUT")
-            for k, v in h.items():
-                req.add_header(k, v)
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                return resp.status in (200, 201)
-    except Exception:
-        pass
-    return False
 
 _HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
