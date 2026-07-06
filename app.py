@@ -850,6 +850,4 @@ with tab_pe:
             secid = info.get('index_secid')
             if not secid:
                 continue
-            with st.spinner(f'获取 [{code}] {info["index_name"]}…'):
-                val = fetch_index_valuation(secid)
-            st.session_state.pe_fetch_results[
+            with st.spinner(f'获取 [{code}] {info["index_name"]}…
