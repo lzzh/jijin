@@ -197,7 +197,7 @@ def _parse_float(v):
 def fetch_index_raw(secid):
     """从东方财富 push2 接口抓取指数全部常用字段，用于诊断哪个字段是 PE。返回 (field_dict, error)"""
     fields = 'f2,f9,f114,f115,f116,f117,f162,f163,f14'
-    url = (f'https://push2.eastmoney.com/api/qt/stock/get?ut=fa5fd1943c7b386f172d6893dbfba10b'
+    url = (f'https://push2delay.eastmoney.com/api/qt/stock/get?ut=fa5fd1943c7b386f172d6893dbfba10b'
            f'&fltt=2&invt=2&fields={fields}&secid={secid}')
     text, err = http_get(url)
     if text is None:
