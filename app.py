@@ -11,10 +11,12 @@ except ImportError:
     import urllib.request
     HAS_REQUESTS = False
 
-# ══════════════════════════════════════════════════════════
-#  配置
-# ══════════════════════════════════════════════════════════
+# ── 配置 ──
 st.set_page_config(page_title="定投监控看板", layout="wide", initial_sidebar_state="collapsed")
+
+md = lambda h: st.markdown(h, unsafe_allow_html=True)          # 渲染HTML片段
+sec = lambda t: md(f'<div class="sec">{t}</div>')               # 小节标题
+divider = lambda: md('<div class="divider"></div>')             # 分隔线
 
 CONFIG_FILE  = "fund_config.json"
 HISTORY_DIR  = "fund_history"
@@ -52,10 +54,7 @@ DEFAULT_CONFIG = {
     },
 }
 
-# ══════════════════════════════════════════════════════════
-#  GitHub 持久化层（替代 Streamlit Cloud 临时文件系统）
-#  Secrets 需配置：GITHUB_TOKEN / GITHUB_REPO / GITHUB_BRANCH(可选)
-# ══════════════════════════════════════════════════════════
+# ── GitHub 持久化层（替代 Streamlit Cloud 临时文件系统；Secrets 需配置 GITHUB_TOKEN / GITHUB_REPO / GITHUB_BRANCH(可选)）──
 def _gh_enabled():
     try:
         return bool(st.secrets.get("GITHUB_TOKEN") and st.secrets.get("GITHUB_REPO"))
@@ -76,21 +75,20 @@ def gh_read(path):
     if not _gh_enabled():
         return None, None
     try:
-        repo   = st.secrets.get("GITHUB_REPO", "")
+        repo = st.secrets.get("GITHUB_REPO", "")
         branch = st.secrets.get("GITHUB_BRANCH", "main") or "main"
-        url    = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
+        url = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
         if HAS_REQUESTS:
             r = rlib.get(url, headers=_gh_headers(), timeout=10)
-            if r.status_code == 200:
-                d = r.json()
-                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
+            d = r.json() if r.status_code == 200 else None
         else:
             req = urllib.request.Request(url)
             for k, v in _gh_headers().items():
                 req.add_header(k, v)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 d = json.loads(resp.read())
-                return base64.b64decode(d['content']).decode('utf-8'), d['sha']
+        if d:
+            return base64.b64decode(d['content']).decode('utf-8'), d['sha']
     except Exception:
         pass
     return None, None
@@ -100,130 +98,65 @@ def gh_write(path, content_str):
     if not _gh_enabled():
         return False
     try:
-        _, sha   = gh_read(path)
-        repo     = st.secrets.get("GITHUB_REPO", "")
-        branch   = st.secrets.get("GITHUB_BRANCH", "main") or "main"
-        url      = f"https://api.github.com/repos/{repo}/contents/{path}"
-        payload  = {
-            "message": f"auto: update {path}",
-            "content": base64.b64encode(content_str.encode('utf-8')).decode(),
-            "branch":  branch,
-        }
-        if sha:
-            payload["sha"] = sha
+        _, sha = gh_read(path)
+        repo = st.secrets.get("GITHUB_REPO", "")
+        branch = st.secrets.get("GITHUB_BRANCH", "main") or "main"
+        url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        payload = {"message": f"auto: update {path}",
+                   "content": base64.b64encode(content_str.encode('utf-8')).decode(), "branch": branch}
+        if sha: payload["sha"] = sha
         if HAS_REQUESTS:
             r = rlib.put(url, headers=_gh_headers(), json=payload, timeout=20)
             return r.status_code in (200, 201)
-        else:
-            body = json.dumps(payload).encode('utf-8')
-            h = {**_gh_headers(), "Content-Type": "application/json"}
-            req = urllib.request.Request(url, data=body, method="PUT")
-            for k, v in h.items():
-                req.add_header(k, v)
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                return resp.status in (200, 201)
+        body = json.dumps(payload).encode('utf-8')
+        h = {**_gh_headers(), "Content-Type": "application/json"}
+        req = urllib.request.Request(url, data=body, method="PUT")
+        for k, v in h.items():
+            req.add_header(k, v)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.status in (200, 201)
     except Exception:
         pass
     return False
-def load_config():
-    if os.path.exists(CONFIG_FILE):
+# 通用 JSON 持久化：本地文件优先，其次 GitHub，都没有则返回默认值
+def jload(path, default):
+    if os.path.exists(path):
         try:
-            return json.load(open(CONFIG_FILE, encoding='utf-8'))
+            return json.load(open(path, encoding='utf-8'))
         except Exception:
             pass
-    content, _ = gh_read(CONFIG_FILE)
+    content, _ = gh_read(path)
     if content:
         try:
             data = json.loads(content)
-            json.dump(data, open(CONFIG_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            json.dump(data, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
             return data
         except Exception:
             pass
-    return {k: dict(v) for k, v in DEFAULT_CONFIG.items()}
+    return default() if callable(default) else default
 
-def save_config(cfg):
-    content = json.dumps(cfg, ensure_ascii=False, indent=2)
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        f.write(content)
-    gh_write(CONFIG_FILE, content)
-
-def load_history(code):
-    p = os.path.join(HISTORY_DIR, f'{code}.json')
-    if os.path.exists(p):
-        try:
-            return json.load(open(p, encoding='utf-8'))
-        except Exception:
-            pass
-    content, _ = gh_read(f'{HISTORY_DIR}/{code}.json')
-    if content:
-        try:
-            data = json.loads(content)
-            json.dump(data, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-            return data
-        except Exception:
-            pass
-    return []
-
-def save_history(code, data):
-    data = sorted(data, key=lambda x: x['日期'], reverse=True)
+def jsave(path, data):
     content = json.dumps(data, ensure_ascii=False, indent=2)
-    with open(os.path.join(HISTORY_DIR, f'{code}.json'), 'w', encoding='utf-8') as f:
+    with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
-    gh_write(f'{HISTORY_DIR}/{code}.json', content)
+    gh_write(path, content)
 
-def load_cursors():
-    if os.path.exists(CURSOR_FILE):
-        try:
-            return json.load(open(CURSOR_FILE, encoding='utf-8'))
-        except Exception:
-            pass
-    content, _ = gh_read(CURSOR_FILE)
-    if content:
-        try:
-            data = json.loads(content)
-            json.dump(data, open(CURSOR_FILE, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-            return data
-        except Exception:
-            pass
-    return {}
+def _hp(code): return f'{HISTORY_DIR}/{code}.json'
+def _pp(code): return f'{PE_HIST_DIR}/{code}.json'
 
-def save_cursors(c):
-    content = json.dumps(c, ensure_ascii=False, indent=2)
-    with open(CURSOR_FILE, 'w', encoding='utf-8') as f:
-        f.write(content)
-    gh_write(CURSOR_FILE, content)
-
-def load_pe_history(code):
-    p = os.path.join(PE_HIST_DIR, f'{code}.json')
-    if os.path.exists(p):
-        try:
-            return json.load(open(p, encoding='utf-8'))
-        except Exception:
-            pass
-    content, _ = gh_read(f'{PE_HIST_DIR}/{code}.json')
-    if content:
-        try:
-            data = json.loads(content)
-            json.dump(data, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-            return data
-        except Exception:
-            pass
-    return []
-
-def save_pe_history(code, records):
-    content = json.dumps(records, ensure_ascii=False, indent=2)
-    with open(os.path.join(PE_HIST_DIR, f'{code}.json'), 'w', encoding='utf-8') as f:
-        f.write(content)
-    gh_write(f'{PE_HIST_DIR}/{code}.json', content)
+load_config  = lambda: jload(CONFIG_FILE, lambda: {k: dict(v) for k, v in DEFAULT_CONFIG.items()})
+save_config  = lambda cfg: jsave(CONFIG_FILE, cfg)
+load_cursors = lambda: jload(CURSOR_FILE, dict)
+save_cursors = lambda c: jsave(CURSOR_FILE, c)
+load_history = lambda code: jload(_hp(code), list)
+save_history = lambda code, data: jsave(_hp(code), sorted(data, key=lambda x: x['日期'], reverse=True))
+load_pe_history = lambda code: jload(_pp(code), list)
+save_pe_history = lambda code, records: jsave(_pp(code), records)
 
 if 'cfg' not in st.session_state:
     st.session_state.cfg = load_config()
 
-# ══════════════════════════════════════════════════════════
-#  网络工具
-# ══════════════════════════════════════════════════════════
-
-
+# ── 网络工具 ──
 _HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
                    'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -253,8 +186,6 @@ def http_get(url, extra_headers=None, timeout=30):  # 超时延长至30秒
     except Exception as e:
         return None, str(e)
 
-_INVALID = {'-', '--', '', 'null', 'None', '0', '0.0'}
-
 def _parse_float(v):
     """安全转 float，失败返回 None"""
     try:
@@ -264,16 +195,10 @@ def _parse_float(v):
         return None
 
 def fetch_index_raw(secid):
-    """
-    从东方财富 push2 接口抓取指数全部常用字段，用于诊断哪个字段是 PE。
-    返回 (field_dict, error)
-    """
+    """从东方财富 push2 接口抓取指数全部常用字段，用于诊断哪个字段是 PE。返回 (field_dict, error)"""
     fields = 'f2,f9,f114,f115,f116,f117,f162,f163,f14'
-    url = (
-        'https://push2.eastmoney.com/api/qt/stock/get'
-        f'?ut=fa5fd1943c7b386f172d6893dbfba10b&fltt=2&invt=2'
-        f'&fields={fields}&secid={secid}'
-    )
+    url = (f'https://push2.eastmoney.com/api/qt/stock/get?ut=fa5fd1943c7b386f172d6893dbfba10b'
+           f'&fltt=2&invt=2&fields={fields}&secid={secid}')
     text, err = http_get(url)
     if text is None:
         return None, err
@@ -284,57 +209,33 @@ def fetch_index_raw(secid):
 
 def fetch_index_valuation(secid):
     """
-    多源交叉获取指数估值数据。
-    来源A: 东方财富 push2（字段诊断用）
-    来源B: 深交所官方估值接口（SZ指数专用，最权威）
-    来源C: 上交所官方接口（SH指数专用）
+    多源交叉获取指数估值数据：A=东方财富push2（字段诊断），B=深交所官方（SZ专用，最权威），C=上交所官方（SH专用）
     返回 dict: {pe_ttm, pe_static, pb, div_yield, notes}
     """
     result = {'pe_ttm': None, 'pe_static': None, 'pb': None, 'div_yield': None, 'notes': []}
     market, code_only = secid.split('.')
 
-    # ── 来源 A：push2 行情接口（字段说明）────────────────
-    # 对"指数"，各字段实际含义与股票不同：
-    #   f9   = 动态PE（指数通常为空）
-    #   f114 = 静态PE（有值，可参考）
-    #   f115 = 对指数无意义，常为0，不可用
-    #   f116 = 总市值（万亿量级），不是PB
-    #   f162 = 股息率（可能为空）
+    # 来源A：push2（指数字段含义与股票不同：f9动态PE通常为空，f114静态PE可参考，f115无效，f116是总市值非PB，f162股息率）
     raw, err = fetch_index_raw(secid)
     if raw:
         pe_static = _parse_float(raw.get('f114'))
-        div       = _parse_float(raw.get('f162'))
-        pb_raw    = _parse_float(raw.get('f116'))
-        pb        = pb_raw if (pb_raw and pb_raw < 100) else None
-        if pe_static:
-            result['pe_static'] = pe_static
-        if pb:
-            result['pb'] = pb
-        if div:
-            result['div_yield'] = f'{div:.2f}%'
-        result['notes'].append(
-            f'push2 ▶ f9(动态PE)={raw.get("f9")}  '
-            f'f114(静态PE)={raw.get("f114")}  '
-            f'f115(指数无效)={raw.get("f115")}  '
-            f'f116(总市值非PB)={raw.get("f116")}  '
-            f'f162(股息率)={raw.get("f162")}'
-        )
+        div = _parse_float(raw.get('f162'))
+        pb_raw = _parse_float(raw.get('f116'))
+        pb = pb_raw if (pb_raw and pb_raw < 100) else None
+        if pe_static: result['pe_static'] = pe_static
+        if pb: result['pb'] = pb
+        if div: result['div_yield'] = f'{div:.2f}%'
+        result['notes'].append(f'push2 ▶ f9(动态PE)={raw.get("f9")}  f114(静态PE)={raw.get("f114")}  '
+                                f'f115(指数无效)={raw.get("f115")}  f116(总市值非PB)={raw.get("f116")}  f162(股息率)={raw.get("f162")}')
     else:
         result['notes'].append(f'push2 失败: {err}')
 
-    # ── 来源 B：深交所官方估值（SZ指数）────────────────
+    # 来源B：深交所官方估值（SZ指数），尝试多个公开端点
     if market == '0':
-        # 深交所指数估值：尝试多个公开端点
         szse_urls = [
-            (
-                'https://www.szse.cn/api/report/ShowReport/data'
-                '?SHOWTYPE=JSON&CATALOGID=1815_zhishu&TABKEY=tab1&random=0.1',
-                {'Referer': 'https://www.szse.cn/market/bond/index/index.html'}
-            ),
-            (
-                'https://www.szse.cn/market/product/index/index/index.html',
-                {'Referer': 'https://www.szse.cn/'}
-            ),
+            ('https://www.szse.cn/api/report/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1815_zhishu&TABKEY=tab1&random=0.1',
+             {'Referer': 'https://www.szse.cn/market/bond/index/index.html'}),
+            ('https://www.szse.cn/market/product/index/index/index.html', {'Referer': 'https://www.szse.cn/'}),
         ]
         fetched = False
         for szse_url, extra_h in szse_urls:
@@ -345,61 +246,41 @@ def fetch_index_valuation(secid):
                     matched = [r for r in rows if str(r.get('zqdm', '')).strip() == code_only]
                     if matched:
                         r = matched[0]
-                        pe_ttm    = _parse_float(r.get('syl2'))
-                        pe_static = _parse_float(r.get('syl1'))
-                        pb        = _parse_float(r.get('sjl'))
-                        div_raw   = str(r.get('jzl', '')).replace('%', '').strip()
-                        div       = _parse_float(div_raw)
-                        if pe_ttm:    result['pe_ttm']    = pe_ttm
-                        if pe_static and not result['pe_static']:
-                            result['pe_static'] = pe_static
-                        if pb:        result['pb']        = pb
-                        if div:       result['div_yield'] = f'{div:.2f}%'
-                        result['notes'].append(
-                            f'深交所官方 ▶ {r.get("zqjc")}  '
-                            f'滚动PE={r.get("syl2")}  静态PE={r.get("syl1")}  '
-                            f'PB={r.get("sjl")}  股息率={r.get("jzl")}'
-                        )
-                        fetched = True
-                        break
+                        pe_ttm, pe_static = _parse_float(r.get('syl2')), _parse_float(r.get('syl1'))
+                        pb = _parse_float(r.get('sjl'))
+                        div = _parse_float(str(r.get('jzl', '')).replace('%', '').strip())
+                        if pe_ttm: result['pe_ttm'] = pe_ttm
+                        if pe_static and not result['pe_static']: result['pe_static'] = pe_static
+                        if pb: result['pb'] = pb
+                        if div: result['div_yield'] = f'{div:.2f}%'
+                        result['notes'].append(f'深交所官方 ▶ {r.get("zqjc")}  滚动PE={r.get("syl2")}  '
+                                                f'静态PE={r.get("syl1")}  PB={r.get("sjl")}  股息率={r.get("jzl")}')
                     else:
                         result['notes'].append(f'深交所 ▶ 未找到 {code_only}，共{len(rows)}条')
-                        fetched = True
-                        break
+                    fetched = True
+                    break
                 except Exception as e:
                     result['notes'].append(f'深交所 ▶ 解析失败: {e}')
             else:
                 result['notes'].append(f'深交所 ▶ {szse_url[:50]}… 失败: {err_sz or "非JSON响应"}')
         if not fetched:
-            # 所有深交所端点均失败，降级用 push2 的 f114 静态PE
             result['notes'].append('深交所所有接口不可用，PE 仅参考 push2 静态值（f114）')
 
-    # ── 来源 C：上交所官方估值（SH指数）────────────────
+    # 来源C：上交所官方估值（SH指数）
     elif market == '1':
-        sse_url = (
-            'http://query.sse.com.cn/sseQuery/commonSoaQuery.do'
-            '?sqlId=COMMON_SSE_ZQPZ_XXPL_GFZQPZ_L&fileType=json&isPagination=false'
-        )
-        text_sh, err_sh = http_get(
-            sse_url,
-            extra_headers={'Referer': 'http://www.sse.com.cn/'},
-            timeout=15
-        )
+        sse_url = ('http://query.sse.com.cn/sseQuery/commonSoaQuery.do'
+                   '?sqlId=COMMON_SSE_ZQPZ_XXPL_GFZQPZ_L&fileType=json&isPagination=false')
+        text_sh, err_sh = http_get(sse_url, extra_headers={'Referer': 'http://www.sse.com.cn/'}, timeout=15)
         if text_sh:
             try:
                 rows = json.loads(text_sh).get('result', [])
                 matched = [r for r in rows if str(r.get('ZQDM', '')).strip() == code_only]
                 if matched:
                     r = matched[0]
-                    pe_ttm = _parse_float(r.get('HQSYL'))
-                    pb     = _parse_float(r.get('HQSJL'))
-                    if pe_ttm:
-                        result['pe_ttm'] = pe_ttm
-                    if pb:
-                        result['pb'] = pb
-                    result['notes'].append(
-                        f'上交所官方 ▶ 滚动PE={r.get("HQSYL")}  PB={r.get("HQSJL")}'
-                    )
+                    pe_ttm, pb = _parse_float(r.get('HQSYL')), _parse_float(r.get('HQSJL'))
+                    if pe_ttm: result['pe_ttm'] = pe_ttm
+                    if pb: result['pb'] = pb
+                    result['notes'].append(f'上交所官方 ▶ 滚动PE={r.get("HQSYL")}  PB={r.get("HQSJL")}')
                 else:
                     result['notes'].append(f'上交所 ▶ 未找到代码 {code_only}，共{len(rows)}条')
             except Exception as e:
@@ -410,21 +291,11 @@ def fetch_index_valuation(secid):
     return result
 
 def fetch_nav_page(code, page):
-    """
-    抓取基金历史净值单页（东方财富标准接口）。
-    返回 (records_list, error_str)
-    records_list=None 表示网络/解析失败；[] 表示该页已到底
-    """
-    url = (
-        f'https://api.fund.eastmoney.com/f10/lsjz'
-        f'?fundCode={code}&pageIndex={page}&pageSize=40'
-        f'&_={int(time.time()*1000)}'
-    )
-    extra = {
-        'Referer': f'https://fundf10.eastmoney.com/lsjz_{code}.html',
-        'Origin': 'https://fundf10.eastmoney.com',
-        'X-Requested-With': 'XMLHttpRequest',
-    }
+    """抓取基金历史净值单页（东方财富标准接口）。返回 (records_list, error_str)；None=失败，[]=已到底"""
+    url = (f'https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex={page}'
+           f'&pageSize=40&_={int(time.time()*1000)}')
+    extra = {'Referer': f'https://fundf10.eastmoney.com/lsjz_{code}.html',
+             'Origin': 'https://fundf10.eastmoney.com', 'X-Requested-With': 'XMLHttpRequest'}
     text, err = http_get(url, extra_headers=extra)
     if text is None:
         return None, err
@@ -453,75 +324,48 @@ def fetch_nav_page(code, page):
         })
     return records, None
 
-# ══════════════════════════════════════════════════════════
-#  双向历史同步
-# ══════════════════════════════════════════════════════════
-def sync_forward(code, max_pages=10):
-    """
-    向前同步（追最新数据）：从第1页开始，直到整页数据全部已存在为止。
-    返回 (new_count, log_lines)
-    """
-    local = load_history(code)
-    existing = {r['日期'] for r in local}
-    new_count, logs = 0, []
-    for p in range(1, max_pages + 1):
+# ── 双向历史同步：共用翻页逻辑，向前/向后仅在停止条件与提示语上有别 ──
+def _walk_pages(code, start_page, n_pages, local, existing, forward):
+    """就地把新记录追加进 local / existing，返回 (new_count, log_lines, last_page)"""
+    logs, new_count, last_page = [], 0, start_page
+    tag = '向前' if forward else '向后'
+    for p in range(start_page, start_page + n_pages):
         records, err = fetch_nav_page(code, p)
         if records is None:
-            logs.append(f'  向前 第{p}页 ⚠️ {err}')
-            break
+            logs.append(f'  {tag} 第{p}页 ⚠️ {err}'); break
         if not records:
-            logs.append(f'  向前 第{p}页 已到底部')
+            logs.append(f'  {tag} 第{p}页 已到底部' if forward else f'  {tag} 第{p}页 已到历史底部，全量同步完成 🎉')
             break
         new_on_page = [r for r in records if r['日期'] not in existing]
-        if not new_on_page:
-            logs.append(f'  向前 第{p}页 全部已存在，停止向前')
-            break
+        if forward and not new_on_page:
+            logs.append(f'  {tag} 第{p}页 全部已存在，停止向前'); break
         for r in new_on_page:
-            local.append(r)
-            existing.add(r['日期'])
-        new_count += len(new_on_page)
-        logs.append(f'  向前 第{p}页 ✅ +{len(new_on_page)}条')
-        time.sleep(random.uniform(1.2, 2.0))
-    if new_count:
-        save_history(code, local)
-    return new_count, logs
-
-def sync_backward(code, pages=20):
-    """
-    向后同步（挖历史数据）：从上次游标继续往深处挖。
-    返回 (new_count, log_lines, new_cursor)
-    """
-    local = load_history(code)
-    existing = {r['日期'] for r in local}
-    cursors = load_cursors()
-    start_page = cursors.get(code, {}).get('backward_page', 1)
-    new_count, logs = 0, []
-    last_page = start_page
-    for p in range(start_page, start_page + pages):
-        records, err = fetch_nav_page(code, p)
-        if records is None:
-            logs.append(f'  向后 第{p}页 ⚠️ {err}')
-            break
-        if not records:
-            logs.append(f'  向后 第{p}页 已到历史底部，全量同步完成 🎉')
-            break
-        new_on_page = [r for r in records if r['日期'] not in existing]
-        for r in new_on_page:
-            local.append(r)
-            existing.add(r['日期'])
+            local.append(r); existing.add(r['日期'])
         new_count += len(new_on_page)
         last_page = p + 1
-        logs.append(f'  向后 第{p}页 ✅ +{len(new_on_page)}条（已存{len(existing)}条）')
-        time.sleep(random.uniform(1.5, 2.5))
-    if new_count:
-        save_history(code, local)
-    cursors.setdefault(code, {})['backward_page'] = last_page
-    save_cursors(cursors)
+        logs.append(f'  {tag} 第{p}页 ✅ +{len(new_on_page)}条' + ('' if forward else f'（已存{len(existing)}条）'))
+        time.sleep(random.uniform(1.2, 2.0) if forward else random.uniform(1.5, 2.5))
     return new_count, logs, last_page
 
-# ══════════════════════════════════════════════════════════
-#  PE 百分位：基于本地 PE 历史自动累积计算
-# ══════════════════════════════════════════════════════════
+def sync_forward(code, max_pages=10):
+    """向前同步（追最新数据）：从第1页开始，直到整页数据全部已存在为止。"""
+    local = load_history(code)
+    n, logs, _ = _walk_pages(code, 1, max_pages, local, {r['日期'] for r in local}, forward=True)
+    if n: save_history(code, local)
+    return n, logs
+
+def sync_backward(code, pages=20):
+    """向后同步（挖历史数据）：从上次游标继续往深处挖。返回 (new_count, log_lines, new_cursor)"""
+    local = load_history(code)
+    cursors = load_cursors()
+    start_page = cursors.get(code, {}).get('backward_page', 1)
+    n, logs, last_page = _walk_pages(code, start_page, pages, local, {r['日期'] for r in local}, forward=False)
+    if n: save_history(code, local)
+    cursors.setdefault(code, {})['backward_page'] = last_page
+    save_cursors(cursors)
+    return n, logs, last_page
+
+# ── PE 百分位：基于本地 PE 历史自动累积计算 ──
 def record_and_calc_pe_percent(code, pe_now):
     """
     将今日 PE 存入本地历史，并返回历史百分位（越多数据越准确）。
@@ -537,9 +381,7 @@ def record_and_calc_pe_percent(code, pe_now):
     below = sum(1 for v in vals if v < pe_now)
     return round(below / len(vals) * 100, 1)
 
-# ══════════════════════════════════════════════════════════
-#  策略评估（纯函数，不存配置）
-# ══════════════════════════════════════════════════════════
+# ── 策略评估（纯函数，不存配置） ──
 def evaluate_strategy(pe_percent, period, amount):
     half   = max(10, int(amount * 0.5))
     double = int(amount * 1.5)
@@ -551,10 +393,8 @@ def evaluate_strategy(pe_percent, period, amount):
     else:
         return 'mid',  f'⚖️ PE百分位 {pe_percent:.1f}%，估值均衡。严格按计划执行 {plan}。'
 
-# ══════════════════════════════════════════════════════════
-#  CSS（mobile-first 暗色金融终端）
-# ══════════════════════════════════════════════════════════
-st.markdown("""
+# ── CSS（mobile-first 暗色金融终端） ──
+md("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 #MainMenu,footer,header{visibility:hidden}
@@ -616,11 +456,9 @@ div[data-testid="stProgress"]>div>div{background:linear-gradient(90deg,#F0A500,#
 label[data-testid="stCheckbox"]{color:#C9D1D9!important;min-height:40px!important;display:flex!important;align-items:center!important}
 @supports(padding-bottom:env(safe-area-inset-bottom)){.block-container{padding-bottom:calc(3rem + env(safe-area-inset-bottom))!important}}
 </style>
-""", unsafe_allow_html=True)
+""")
 
-# ══════════════════════════════════════════════════════════
-#  Header
-# ══════════════════════════════════════════════════════════
+# ── Header ──
 cfg = st.session_state.cfg
 total_mo = sum(
     i['amount'] * 21 if i['period'] == '每天'
@@ -628,7 +466,7 @@ total_mo = sum(
     else i['amount']
     for i in cfg.values()
 )
-st.markdown(f"""
+md(f"""
 <div class="dash-header">
   <h1>📊 定投监控看板</h1>
   <div class="sub">
@@ -636,12 +474,10 @@ st.markdown(f"""
     月投约 <span style="color:#F0A500;font-weight:600">{total_mo:,.0f}</span> 元
   </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
-# ══════════════════════════════════════════════════════════
-#  § 1  资产卡片（已转义）
-# ══════════════════════════════════════════════════════════
-st.markdown('<div class="sec">资产配置 · 估值执行状态</div>', unsafe_allow_html=True)
+# ── § 1  资产卡片（已转义） ──
+sec('资产配置 · 估值执行状态')
 _cards_html = '<div class="cards-grid">'
 for _fcode, _finfo in cfg.items():
     # 转义所有可能含特殊字符的文本
@@ -663,13 +499,11 @@ for _fcode, _finfo in cfg.items():
     _card = f"""<div class="fcard {_lvl}"><div class="fcard-hdr"><div><div class="fname">{fname}</div><div class="fcode">{fcode} · {index_name}</div></div><div class="badge">{period}  {_finfo['amount']} 元</div></div><div class="mgrid"><div class="mcell"><div class="mlbl">PE 百分位<br>({pe_src})</div><div class="mval {_pc}">{_pe_p:.1f}%</div></div><div class="mcell"><div class="mlbl">PE TTM</div><div class="mval">{pe_ttm_str}</div></div><div class="mcell"><div class="mlbl">TTM 股息率</div><div class="mval {_lvl}">{div_yield}</div></div></div><div class="sbox {_lvl}">{strategy}</div></div>"""
     _cards_html += _card
 _cards_html += '</div>'
-st.markdown(_cards_html, unsafe_allow_html=True)
+md(_cards_html)
 
-# ══════════════════════════════════════════════════════════
-#  § 2  走势图（未变动）
-# ══════════════════════════════════════════════════════════
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-st.markdown('<div class="sec">净值走势穿透</div>', unsafe_allow_html=True)
+# ── § 2  走势图（未变动） ──
+divider()
+sec('净值走势穿透')
 
 chart_code = st.selectbox(
     '选择基金',
@@ -754,13 +588,11 @@ if hist_data:
         dd['净值增长率'] = dd['净值增长率'].map(lambda x: f'{x:+.2f}%')
         st.dataframe(dd[['日期','单位净值','累计净值','净值增长率']], use_container_width=True, hide_index=True)
 else:
-    st.markdown('<div class="sbox info">💡 本地暂无历史数据，请前往下方"数据同步"面板下载。</div>', unsafe_allow_html=True)
+    md('<div class="sbox info">💡 本地暂无历史数据，请前往下方"数据同步"面板下载。</div>')
 
-# ══════════════════════════════════════════════════════════
-#  § 3  控制台
-# ══════════════════════════════════════════════════════════
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-st.markdown('<div class="sec">数据同步 · 参数管理</div>', unsafe_allow_html=True)
+# ── § 3  控制台 ──
+divider()
+sec('数据同步 · 参数管理')
 
 tab_sync, tab_pe, tab_mgmt = st.tabs(['📡 历史净值同步', '📊 指数PE更新', '⚙️ 资产管理'])
 
@@ -782,9 +614,9 @@ with tab_sync:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     if _gh_enabled():
-        st.markdown('<div class="sbox info">☁️ <b>GitHub 持久化已启用</b>：同步完成后数据自动写回仓库，重启不丢失。</div>', unsafe_allow_html=True)
+        md('<div class="sbox info">☁️ <b>GitHub 持久化已启用</b>：同步完成后数据自动写回仓库，重启不丢失。</div>')
     else:
-        st.markdown('<div class="sbox mid">⚠️ <b>GitHub 持久化未配置</b>：数据仅在本次会话有效，重启后消失。<br>请在 Streamlit Cloud → App settings → Secrets 中配置 <code>GITHUB_TOKEN</code> 和 <code>GITHUB_REPO</code>。</div>', unsafe_allow_html=True)
+        md('<div class="sbox mid">⚠️ <b>GitHub 持久化未配置</b>：数据仅在本次会话有效，重启后消失。<br>请在 Streamlit Cloud → App settings → Secrets 中配置 <code>GITHUB_TOKEN</code> 和 <code>GITHUB_REPO</code>。</div>')
     st.markdown('**运行策略**：先向前追最新数据，再向后接着游标挖历史。')
     c1, c2 = st.columns(2)
     with c1:
@@ -835,7 +667,7 @@ with tab_sync:
 
 # ─── Tab 2: PE 更新 ────────────────────────────────────
 with tab_pe:
-    st.markdown("""
+    md("""
     <div class="sbox info">
     📌 <b>数据来源说明</b><br>
     · <b>来源A（push2）</b>：f114=静态PE（可参考），f116=总市值非PB，f115对指数无效<br>
@@ -843,7 +675,7 @@ with tab_pe:
     · <b>来源C（上交所官方）</b>：SH指数专用，HQSYL=PE<br>
     · 境外指数（纳指/标普）无官方 A 股估值，只能手动维护
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
     if st.button('🔍 获取所有 A 股指数估值（双源对比）', type='primary'):
         st.session_state.pe_fetch_results = {}
@@ -867,12 +699,9 @@ with tab_pe:
             cols = st.columns(4)
             def show_val(col, label, v, highlight=False):
                 color = '#F0A500' if highlight and v else '#E6EDF3'
-                col.markdown(
-                    f'<div class="mcell"><div class="mlbl">{label}</div>'
-                    f'<div class="mval" style="color:{color};font-size:14px">'
-                    f'{v if v is not None else "—"}</div></div>',
-                    unsafe_allow_html=True
-                )
+                col.markdown(f'<div class="mcell"><div class="mlbl">{label}</div>'
+                             f'<div class="mval" style="color:{color};font-size:14px">{v if v is not None else "—"}</div></div>',
+                             unsafe_allow_html=True)
             show_val(cols[0], 'PE TTM（推荐）',  val.get('pe_ttm'),    highlight=True)
             show_val(cols[1], 'PE 静态',          val.get('pe_static'))
             show_val(cols[2], 'PB 市净率',        val.get('pb'))
@@ -897,7 +726,7 @@ with tab_pe:
                     key=f'confirm_div_{code}'
                 )
             apply_targets[code] = {'pe': confirmed_pe, 'div': confirmed_div}
-            st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+            md('<div style="height:8px"></div>')
 
         if st.button('✅ 应用所有确认值并保存'):
             for code, vals in apply_targets.items():
@@ -934,7 +763,6 @@ with tab_pe:
             st.success('✅ 已保存')
             st.rerun()
 
-# ─── Tab 3: 资产管理 ───────────────────────────────────
 # ─── Tab 3: 资产管理 ───────────────────────────────────
 with tab_mgmt:
     mgmt_code = st.selectbox('选择基金', list(cfg.keys()),
