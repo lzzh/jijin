@@ -264,7 +264,11 @@ def fetch_index_valuation(secid):
             else:
                 result['notes'].append(f'深交所 ▶ {szse_url[:50]}… 失败: {err_sz or "非JSON响应"}')
         if not fetched:
-            result['notes'].append('深交所所有接口不可用，PE 仅参考 push2 静态值（f114）')
+            if result['pe_static'] and not result['pe_ttm']:
+                result['pe_ttm'] = result['pe_static']
+                result['notes'].append('深交所所有接口不可用，PE TTM 已用 push2 静态值（f114）兜底，仅供参考')
+            else:
+                result['notes'].append('深交所所有接口不可用，且 push2 静态值也拿不到，请手动填写')
 
     # 来源C：上交所官方估值（SH指数）
     elif market == '1':
@@ -287,6 +291,10 @@ def fetch_index_valuation(secid):
                 result['notes'].append(f'上交所 ▶ 解析失败: {e}')
         else:
             result['notes'].append(f'上交所 ▶ 请求失败: {err_sh}')
+
+        if not result['pe_ttm'] and result['pe_static']:
+            result['pe_ttm'] = result['pe_static']
+            result['notes'].append('上交所暂无数据，PE TTM 已用 push2 静态值（f114）兜底，仅供参考')
 
     return result
 
