@@ -411,13 +411,12 @@ def fetch_index_valuation(secid):
 def fetch_nav_page(code, page):
     """
     抓取基金历史净值单页（东方财富标准接口）。
-    返回 (records_list, error_str)
-    records_list=None 表示网络/解析失败；[] 表示该页已到底
+    返回 (records_list, error_str) records_list=None 表示网络/解析失败；[] 表示该页已到底
     """
     url = (
         f'https://api.fund.eastmoney.com/f10/lsjz'
         f'?fundCode={code}&pageIndex={page}&pageSize=40'
-        f'&_={int(time.time()*1000)}'
+        f'&_{int(time.time()*1000)}'
     )
     extra = {
         'Referer': f'https://fundf10.eastmoney.com/lsjz_{code}.html',
@@ -431,13 +430,12 @@ def fetch_nav_page(code, page):
     except Exception:
         return None, f'返回非JSON（可能被拦截）: {text[:80]}'
     
-    if data.get('Data') is None: return None, f'Data字段为空，可能触发限流'
+    if data.get('Data') is None:
+        return None, f'Data字段为空，可能触发限流'
     
     rows = data['Data'].get('LSJZList', [])
     if not rows: return [], '该页为空（已到历史底部）'
     
     records = []
     for r in rows:
-        if not r.get('FSRQ') or not r.get('DWJZ'): continue
-        try:
-            growth
+        if not r.get('
