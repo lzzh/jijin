@@ -660,32 +660,8 @@ for _fcode, _finfo in cfg.items():
     div_yield = html.escape(str(_finfo.get('div_yield', '—')))
     _pc = 'high' if _pe_p >= 75 else ('low' if _pe_p <= 35 else 'mid')
 
-    _cards_html += f"""
-    <div class="fcard {_lvl}">
-      <div class="fcard-hdr">
-        <div>
-          <div class="fname">{fname}</div>
-          <div class="fcode">{fcode} · {index_name}</div>
-        </div>
-        <div class="badge">{period}  {_finfo['amount']} 元</div>
-      </div>
-      <div class="mgrid">
-        <div class="mcell">
-          <div class="mlbl">PE 百分位<br>({pe_src})</div>
-          <div class="mval {_pc}">{_pe_p:.1f}%</div>
-        </div>
-        <div class="mcell">
-          <div class="mlbl">PE TTM</div>
-          <div class="mval">{pe_ttm_str}</div>
-        </div>
-        <div class="mcell">
-          <div class="mlbl">TTM 股息率</div>
-          <div class="mval {_lvl}">{div_yield}</div>
-        </div>
-      </div>
-      <div class="sbox {_lvl}">{strategy}</div>
-    </div>
-    """
+    _card = f"""<div class="fcard {_lvl}"><div class="fcard-hdr"><div><div class="fname">{fname}</div><div class="fcode">{fcode} · {index_name}</div></div><div class="badge">{period}  {_finfo['amount']} 元</div></div><div class="mgrid"><div class="mcell"><div class="mlbl">PE 百分位<br>({pe_src})</div><div class="mval {_pc}">{_pe_p:.1f}%</div></div><div class="mcell"><div class="mlbl">PE TTM</div><div class="mval">{pe_ttm_str}</div></div><div class="mcell"><div class="mlbl">TTM 股息率</div><div class="mval {_lvl}">{div_yield}</div></div></div><div class="sbox {_lvl}">{strategy}</div></div>"""
+    _cards_html += _card
 _cards_html += '</div>'
 st.markdown(_cards_html, unsafe_allow_html=True)
 
