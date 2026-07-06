@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import json, os, time, random, base64
-import altair as alt
 
 try:
     import requests as rlib
@@ -551,7 +550,7 @@ def evaluate_strategy(pe_percent, period, amount):
         return 'mid',  f'⚖️ PE百分位 {pe_percent:.1f}%，估值均衡。严格按计划执行 {plan}。'
 
 # ══════════════════════════════════════════════════════════
-#  CSS（mobile-first 暗色金融终端）
+#  CSS（mobile-first 暗色金融终端）【修复文字溢出、卡片布局】
 # ══════════════════════════════════════════════════════════
 st.markdown("""
 <style>
@@ -576,17 +575,17 @@ html,body,[class*="css"]{font-family:'Inter','PingFang SC',sans-serif;background
 .sec::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,#1F2937,transparent)}
 .divider{height:1px;background:linear-gradient(90deg,transparent,#1F2937,transparent);margin:18px 0}
 
-.fcard{background:#0D1117;border:1px solid #1F2937;border-radius:12px;padding:14px 14px 14px 18px;margin-bottom:10px;position:relative}
+.fcard{background:#0D1117;border:1px solid #1F2937;border-radius:12px;padding:14px;margin-bottom:10px;position:relative}
 .fcard::before{content:'';position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 2px 2px 0}
 .fcard.low::before{background:#2DA44E}.fcard.mid::before{background:#F0A500}.fcard.high::before{background:#F85149}
 .fcard-hdr{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:12px}
-.fname{font-size:14px;font-weight:600;color:#E6EDF3;line-height:1.4}
+.fname{font-size:14px;font-weight:600;color:#E6EDF3;line-height:1.4;word-break:break-all;}
 .fcode{font-family:'JetBrains Mono',monospace;font-size:11px;color:#6E7681;margin-top:2px}
 .badge{background:#161B22;border:1px solid #21262D;border-radius:20px;padding:5px 12px;font-size:12px;color:#58A6FF;font-family:'JetBrains Mono',monospace;white-space:nowrap;min-height:32px;display:flex;align-items:center;align-self:flex-start}
 
 .mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
 .mcell{background:#161B22;border-radius:8px;padding:10px 8px;text-align:center}
-.mlbl{font-size:9px;color:#6E7681;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;line-height:1.3}
+.mlbl{font-size:9px;color:#6E7681;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;line-height:1.3;white-space:normal;}
 .mval{font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;color:#E6EDF3}
 @media(min-width:400px){.mval{font-size:17px}}
 .mval.low{color:#2DA44E}.mval.mid{color:#F0A500}.mval.high{color:#F85149}
@@ -638,7 +637,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
-#  § 1  资产卡片
+#  § 1  资产卡片（修复HTML换行断裂、源码裸露问题）
 # ══════════════════════════════════════════════════════════
 st.markdown('<div class="sec">资产配置 · 估值执行状态</div>', unsafe_allow_html=True)
 _cards_html = '<div class="cards-grid">'
@@ -647,33 +646,22 @@ for _fcode, _finfo in cfg.items():
     _lvl, _strategy = evaluate_strategy(_pe_p, _finfo['period'], _finfo['amount'])
     _pc    = 'high' if _pe_p >= 75 else ('low' if _pe_p <= 35 else 'mid')
     _pe_src = '手动' if _finfo.get('index_secid') is None else '自动'
-    _cards_html += f"""
-    <div class="fcard {_lvl}">
-      <div class="fcard-hdr">
-        <div>
-          <div class="fname">{_finfo['name']}</div>
-          <div class="fcode">{_fcode} · {_finfo['index_name']}</div>
-        </div>
-        <div class="badge">{_finfo['period']}  {_finfo['amount']} 元</div>
-      </div>
-      <div class="mgrid">
-        <div class="mcell">
-          <div class="mlbl">PE 百分位<br>({_pe_src})</div>
-          <div class="mval {_pc}">{_pe_p:.1f}%</div>
-        </div>
-        <div class="mcell">
-          <div class="mlbl">PE TTM</div>
-          <div class="mval">{_finfo.get('pe_ttm', 0):.2f}</div>
-        </div>
-        <div class="mcell">
-          <div class="mlbl">TTM 股息率</div>
-          <div class="mval {_lvl}">{_finfo.get('div_yield','—')}</div>
-        </div>
-      </div>
-      <div class="sbox {_lvl}">{_strategy}</div>
-    </div>
-    """
+    # 单行模板字符串，消除换行导致HTML结构断裂、源码裸露
+    card_tpl = (
+        f'<div class="fcard {_lvl}">'
+        f'<div class="fcard-hdr"><div><div class="fname">{_finfo["name"]}</div><div class="fcode">{_fcode} · {_finfo["index_name"]}</div></div>'
+        f'<div class="badge">{_finfo["period"]}  {_finfo["amount"]} 元</div></div>'
+        f'<div class="mgrid">'
+        f'<div class="mcell"><div class="mlbl">PE 百分位<br>({_pe_src})</div><div class="mval {_pc}">{_pe_p:.1f}%</div></div>'
+        f'<div class="mcell"><div class="mlbl">PE TTM</div><div class="mval">{_finfo.get("pe_ttm", 0):.2f}</div></div>'
+        f'<div class="mcell"><div class="mlbl">TTM 股息率</div><div class="mval {_lvl}">{_finfo.get("div_yield","—")}</div></div>'
+        f'</div>'
+        f'<div class="sbox {_lvl}">{_strategy}</div>'
+        f'</div>'
+    )
+    _cards_html += card_tpl
 _cards_html += '</div>'
+# 一次性完整渲染DOM
 st.markdown(_cards_html, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════
@@ -864,147 +852,4 @@ with tab_pe:
                 continue
             with st.spinner(f'获取 [{code}] {info["index_name"]}…'):
                 val = fetch_index_valuation(secid)
-            st.session_state.pe_fetch_results[code] = val
-
-    if st.session_state.get('pe_fetch_results'):
-        st.markdown('---')
-        st.markdown('**📊 原始数据对比（确认后点击应用）**')
-        apply_targets = {}
-
-        for code, val in st.session_state.pe_fetch_results.items():
-            info = cfg[code]
-            st.markdown(f"**[{code}] {info['index_name']}**")
-
-            cols = st.columns(4)
-            def show_val(col, label, v, highlight=False):
-                color = '#F0A500' if highlight and v else '#E6EDF3'
-                col.markdown(
-                    f'<div class="mcell"><div class="mlbl">{label}</div>'
-                    f'<div class="mval" style="color:{color};font-size:14px">'
-                    f'{v if v is not None else "—"}</div></div>',
-                    unsafe_allow_html=True
-                )
-            show_val(cols[0], 'PE TTM（推荐）',  val.get('pe_ttm'),    highlight=True)
-            show_val(cols[1], 'PE 静态',          val.get('pe_static'))
-            show_val(cols[2], 'PB 市净率',        val.get('pb'))
-            show_val(cols[3], '股息率',            val.get('div_yield'))
-
-            with st.expander('查看原始字段（诊断用）'):
-                for note in val['notes']:
-                    st.code(note, language=None)
-
-            best_pe = val.get('pe_ttm') or val.get('pe_static')
-            c1, c2 = st.columns(2)
-            with c1:
-                confirmed_pe = st.number_input(
-                    f'确认 PE TTM [{code}]',
-                    value=float(best_pe) if best_pe else float(info.get('pe_ttm', 15)),
-                    step=0.1, format='%.2f', key=f'confirm_pe_{code}'
-                )
-            with c2:
-                confirmed_div = st.text_input(
-                    f'确认股息率 [{code}]',
-                    value=val['div_yield'] or info.get('div_yield', ''),
-                    key=f'confirm_div_{code}'
-                )
-            apply_targets[code] = {'pe': confirmed_pe, 'div': confirmed_div}
-            st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
-
-        if st.button('✅ 应用所有确认值并保存'):
-            for code, vals in apply_targets.items():
-                pct = record_and_calc_pe_percent(code, vals['pe'])
-                cfg[code]['pe_ttm'] = vals['pe']
-                if vals['div']:
-                    cfg[code]['div_yield'] = vals['div']
-                if pct is not None:
-                    cfg[code]['pe_percent'] = pct
-                    st.markdown(f'✅ [{code}] PE={vals["pe"]}，股息率={vals["div"]}，'
-                                f'百分位={pct}%（{len(load_pe_history(code))}个样本）')
-                else:
-                    st.markdown(f'✅ [{code}] PE={vals["pe"]}，股息率={vals["div"]}（样本不足，百分位请手动填）')
-            save_config(cfg)
-            st.session_state.cfg = cfg
-            st.session_state.pe_fetch_results = {}
-            st.rerun()
-
-    st.markdown('---')
-    st.markdown('**手动维护估值参数**（PE 百分位始终需手动或等样本积累）')
-    edit_code = st.selectbox('选择基金', list(cfg.keys()),
-                              format_func=lambda x: f'[{x}] {cfg[x]["name"]}',
-                              key='pe_edit_sel')
-    ei = cfg[edit_code]
-    with st.form('pe_form'):
-        c1, c2, c3 = st.columns(3)
-        with c1: new_pe  = st.number_input('PE TTM',    value=float(ei.get('pe_ttm',15)), step=0.1, format='%.2f')
-        with c2: new_pct = st.number_input('PE 百分位%', value=float(ei.get('pe_percent',50)), step=0.1, format='%.1f')
-        with c3: new_div = st.text_input('TTM 股息率',  value=str(ei.get('div_yield','2.00%')))
-        if st.form_submit_button('💾 保存'):
-            cfg[edit_code].update({'pe_ttm': new_pe, 'pe_percent': new_pct, 'div_yield': new_div})
-            save_config(cfg)
-            st.session_state.cfg = cfg
-            st.success('✅ 已保存')
-            st.rerun()
-
-# ─── Tab 3: 资产管理 ───────────────────────────────────
-with tab_mgmt:
-    mgmt_code = st.selectbox('选择基金', list(cfg.keys()),
-                               format_func=lambda x: f'[{x}] {cfg[x]["name"]}',
-                               key='mgmt_sel')
-    mi = cfg[mgmt_code]
-    with st.form('mgmt_form'):
-        c1, c2 = st.columns(2)
-        with c1: new_period = st.text_input('定投周期', value=mi['period'])
-        with c2: new_amount = st.number_input('定投金额（元）', value=int(mi['amount']), step=10)
-        new_index  = st.text_input('指数名称', value=mi.get('index_name',''))
-        new_secid  = st.text_input('指数行情代码（如 0.399673，境外填空）',
-                                    value=mi.get('index_secid','') or '')
-        if st.form_submit_button('💾 保存'):
-            cfg[mgmt_code].update({
-                'period': new_period, 'amount': new_amount,
-                'index_name': new_index,
-                'index_secid': new_secid.strip() or None,
-            })
-            save_config(cfg)
-            st.session_state.cfg = cfg
-            st.success('✅ 已保存')
-            st.rerun()
-
-    st.markdown('---')
-    c_add, c_del = st.columns(2)
-    with c_add:
-        st.markdown('##### ➕ 添加基金')
-        with st.form('add_form'):
-            a_code   = st.text_input('基金代码', max_chars=6)
-            a_name   = st.text_input('基金简称')
-            a_index  = st.text_input('指数名称')
-            a_secid  = st.text_input('指数行情代码（境外填空）')
-            a_period = st.text_input('定投周期', value='每周二')
-            a_amount = st.number_input('金额（元）', value=100, step=10)
-            if st.form_submit_button('创建'):
-                if len(a_code) != 6 or not a_name:
-                    st.error('⚠️ 代码或名称无效')
-                else:
-                    cfg[a_code] = {'name': a_name, 'index_name': a_index,
-                                   'index_secid': a_secid.strip() or None,
-                                   'period': a_period, 'amount': a_amount,
-                                   'pe_ttm': 15.0, 'pe_percent': 50.0, 'div_yield': '2.00%'}
-                    save_config(cfg)
-                    st.session_state.cfg = cfg
-                    st.success(f'✅ [{a_code}] 已添加')
-                    st.rerun()
-    with c_del:
-        st.markdown('##### 🗑️ 删除基金')
-        del_code = st.selectbox('目标', list(cfg.keys()),
-                                 format_func=lambda x: f'[{x}] {cfg[x]["name"]}',
-                                 key='del_sel')
-        if st.checkbox('确认删除（不可恢复）'):
-            if st.button('🔥 删除'):
-                del cfg[del_code]
-                save_config(cfg)
-                st.session_state.cfg = cfg
-                for f in [os.path.join(HISTORY_DIR, f'{del_code}.json'),
-                          os.path.join(PE_HIST_DIR, f'{del_code}.json')]:
-                    if os.path.exists(f):
-                        os.remove(f)
-                st.success('✅ 已删除')
-                st.rerun()
+            st.session_state.pe_fetch_results[
