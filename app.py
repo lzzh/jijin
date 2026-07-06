@@ -959,6 +959,7 @@ with tab_pe:
             st.rerun()
 
 # ─── Tab 3: 资产管理 ───────────────────────────────────
+# ─── Tab 3: 资产管理 ───────────────────────────────────
 with tab_mgmt:
     mgmt_code = st.selectbox('选择基金', list(cfg.keys()),
                                format_func=lambda x: f'[{x}] {cfg[x]["name"]}',
@@ -1020,4 +1021,4 @@ with tab_mgmt:
                     if os.path.exists(f):
                         os.remove(f)
                 st.success('✅ 已删除')
-                st.rerun()   # ← 正确：无 = False
+                st.rerun()
