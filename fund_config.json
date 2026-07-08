@@ -1,0 +1,42 @@
+{
+  "008163": {
+    "name": "南方标普红利低波50ETF联接A",
+    "index_name": "标普红利低波50",
+    "index_secid": null,
+    "period": "每月21号",
+    "amount": 1100,
+    "pe_ttm": 8.22,
+    "pe_percent": 84.82,
+    "div_yield": "4.85%"
+  },
+  "016452": {
+    "name": "南方纳斯达克100指数发起（QDII）A",
+    "index_name": "纳斯达克100",
+    "index_secid": null,
+    "period": "每天",
+    "amount": 80,
+    "pe_ttm": 34.03,
+    "pe_percent": 76.97,
+    "div_yield": "0.36%"
+  },
+  "023882": {
+    "name": "华夏创业板50ETF发起式联接A",
+    "index_name": "创业板50",
+    "index_secid": "0.399673",
+    "period": "每周二",
+    "amount": 100,
+    "pe_ttm": 26.0,
+    "pe_percent": 60.78,
+    "div_yield": "0.80%"
+  },
+  "023917": {
+    "name": "华夏国证自由现金流ETF发起式联接A",
+    "index_name": "国证自由现金流",
+    "index_secid": "0.399387",
+    "period": "每周二",
+    "amount": 790,
+    "pe_ttm": 52.0,
+    "pe_percent": 30.77,
+    "div_yield": "3.20%"
+  }
+}
